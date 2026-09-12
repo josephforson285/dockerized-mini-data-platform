@@ -38,10 +38,11 @@ jobs:
           cp .env.example .env
           ./scripts/gen_secrets.sh
 
-      # Same target developers run; the runner's own linters replace the
-      # throwaway containers used locally.
+      # Exactly the target developers run. hadolint is not on the runner and
+      # the linters are containerised anyway, so parity costs only two small
+      # image pulls and removes any chance of CI and local drifting.
       - name: make lint
-        run: make lint PY="python" HADOLINT="hadolint" SHELLCHECK="shellcheck"
+        run: make lint PY="python"
 
       - name: make validate
         run: make validate
