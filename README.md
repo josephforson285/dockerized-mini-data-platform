@@ -130,6 +130,12 @@ which is what lets CI verify the final hop.
 CI calls the same `make` targets you do, so the runbook and the pipeline cannot
 drift. No repository secrets are needed; GHCR uses the built-in `GITHUB_TOKEN`.
 
+**Notifications.** GitHub already emails the committer on a failed run, so no
+webhook is wired up — a second channel would be noise. What the pipeline adds is
+making that email actionable: a failed end-to-end run writes a table of
+per-service state into the run summary and attaches the compose logs as an
+artifact, and a deploy records which image reference it verified.
+
 ### Promoting to production
 
 `deploy-test` deploys to an ephemeral environment on the runner. Promoting the

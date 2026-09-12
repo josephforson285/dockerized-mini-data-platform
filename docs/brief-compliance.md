@@ -34,6 +34,7 @@ Kept current; a clause with no evidence column is not done.
 | Build and lint images each commit | `lint` + `dags` jobs | hadolint on the only Dockerfile; the other three services run pinned upstream images, which have no Dockerfile to build |
 | Deploy updated containers to a test environment | `publish` → GHCR `sha-<commit>`, then `deploy-test` pulls that image into an ephemeral environment | `deploy-test` job smoke-tests the published artifact |
 | Validate data flow MinIO → Airflow → Postgres → Metabase | `tests/integration/test_end_to_end.py` | `integration` job |
+| Manage notifications | GitHub's native failure email, plus a run summary of per-service state and uploaded compose logs | `Report failure in the run summary` step |
 
 ## Repository structure
 

@@ -115,6 +115,19 @@ jobs:
       - name: make e2e
         run: make e2e PY="python"
 
+      - name: Report failure in the run summary
+        if: failure()
+        run: |
+          {
+            echo "## End-to-end failed"
+            echo
+            echo "| service | state |"
+            echo "| :-- | :-- |"
+            docker compose ps --all --format '| {{.Service}} | {{.Status}} |' || true
+            echo
+            echo "Unhealthy service logs are attached as the \`compose-logs\` artifact."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Collect logs
         if: failure()
         run: |
@@ -228,6 +241,20 @@ jobs:
 
       - name: Smoke-test the deployed artifact
         run: python -m pytest tests/integration -q
+
+      - name: Record what was deployed
+        if: always()
+        env:
+          PUBLISHED_IMAGE: ${{ needs.publish.outputs.image }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          {
+            echo "## Test environment deploy: $OUTCOME"
+            echo
+            echo "Image: \`$PUBLISHED_IMAGE\`"
+            echo
+            echo "Deployed with --no-build, so the artifact tested is the one published."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Collect logs
         if: failure()
