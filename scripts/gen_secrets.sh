@@ -29,9 +29,9 @@ set_var METABASE_ADMIN_PASSWORD "$(rand_pw)"
 set_var AIRFLOW_FERNET_KEY    "$(rand_b64 32)"
 set_var AIRFLOW_SECRET_KEY    "$(rand_b64 32)"
 
-# Airflow writes logs as this uid.
-sed -i "s|^AIRFLOW_UID=.*|AIRFLOW_UID=$(id -u)|" .env
-echo "  set AIRFLOW_UID=$(id -u)"
+# AIRFLOW_UID stays 50000, the image's own airflow user. Matching the host uid
+# is only needed for bind-mounted logs; we use a named volume, and a foreign
+# uid makes Python skip the site-packages that /home/airflow owns.
 
 echo
 echo ".env ready. It is gitignored — never commit it."

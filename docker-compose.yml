@@ -9,6 +9,54 @@ x-healthcheck-defaults: &healthcheck-defaults
   timeout: 5s
   retries: 12
 
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: docker/airflow/Dockerfile
+  image: ${AIRFLOW_IMAGE:-mini-data-platform/airflow}:${IMAGE_TAG:-local}
+  restart: unless-stopped
+  # Airflow writes logs as this uid; a mismatch breaks the mounted volume.
+  user: "${AIRFLOW_UID}:0"
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_SECRET_KEY:?}
+    # Airflow 3 workers call back to the API server; the default points at
+    # localhost, which is empty inside the scheduler container.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    # Workers sign their execution-API calls with this; the API server verifies
+    # with the same value, so it must be identical across every service.
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_SECRET_KEY:?}
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
+      postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${AIRFLOW_DB}
+    # Credentials as config, not clicked into a UI.
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: ${AIRFLOW_ADMIN_USER}:admin
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/auth/passwords.json
+    AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:?}
+    AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?}
+    # Consumed by mini_platform, which talks to services by name inside the network.
+    POSTGRES_HOST: postgres
+    POSTGRES_USER: ${POSTGRES_USER:?}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+    POSTGRES_DB: ${POSTGRES_DB:?}
+    MINIO_ENDPOINT: http://minio:9000
+    MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+    MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?}
+    MINIO_BUCKET: ${MINIO_BUCKET:?}
+    MINIO_REGION: ${MINIO_REGION:?}
+  volumes:
+    - ./dags:/opt/airflow/dags:ro
+    - airflow-logs:/opt/airflow/logs
+    - airflow-auth:/opt/airflow/auth
+  depends_on:
+    postgres:
+      condition: service_healthy
+    minio-init:
+      condition: service_completed_successfully
+    airflow-init:
+      condition: service_completed_successfully
+
 services:
   postgres:
     image: postgres:17
@@ -68,6 +116,52 @@ services:
         mc anonymous set none "local/$$MINIO_BUCKET"
         echo "bucket ready: $$MINIO_BUCKET"
 
+  airflow-init:
+    <<: *airflow-common
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        airflow db migrate
+        mkdir -p /opt/airflow/auth
+        python -c "import json, os; \
+          open(os.environ['AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE'], 'w').write( \
+          json.dumps({os.environ['AIRFLOW_ADMIN_USER']: os.environ['AIRFLOW_ADMIN_PASSWORD']}))"
+        echo "airflow initialised"
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "${AIRFLOW_PORT}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/api/v2/monitor/health || exit 1"]
+      start_period: 40s
+      <<: *healthcheck-defaults
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --local || exit 1"]
+      start_period: 40s
+      <<: *healthcheck-defaults
+
+  # Airflow 3 parses DAGs in its own process, separate from the scheduler.
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type DagProcessorJob --local || exit 1"]
+      start_period: 40s
+      <<: *healthcheck-defaults
+
 volumes:
   pgdata:
   miniodata:
+  airflow-logs:
+  airflow-auth:

@@ -5,6 +5,7 @@ VENV  := .venv
 PY      := env -u PYTHONPATH $(VENV)/bin/python
 PIP     := $(PY) -m pip
 COMPOSE := docker compose
+TEST_IMAGE := mini-data-platform/airflow-test:local
 
 HADOLINT   := docker run --rm -i hadolint/hadolint hadolint
 SHELLCHECK := docker run --rm -v "$(PWD):/mnt" -w /mnt koalaman/shellcheck:stable
@@ -35,7 +36,7 @@ lint: ## ruff, yamllint, hadolint, shellcheck
 	$(PY) -m ruff check .
 	$(PY) -m ruff format --check .
 	$(PY) -m yamllint -s .
-	$(HADOLINT) < docker/airflow/Dockerfile
+	$(HADOLINT) - < docker/airflow/Dockerfile
 	$(SHELLCHECK) scripts/*.sh config/postgres/*.sh
 
 .PHONY: test
@@ -43,23 +44,23 @@ test: ## Unit tests, no Docker
 	$(PY) -m pytest tests/unit -q
 
 .PHONY: dags
-dags: ## Fail on any DAG import error
-	$(PY) -m pytest tests/test_dag_integrity.py -q
+dags: ## Fail on any DAG import error (runs inside the Airflow image)
+	docker build -q --target test -t $(TEST_IMAGE) -f docker/airflow/Dockerfile . >/dev/null
+	docker run --rm --entrypoint python $(TEST_IMAGE) \
+		-m pytest /opt/airflow/tests/test_dag_integrity.py -q
 
 .PHONY: validate
 validate: ## Check compose resolves
 	$(COMPOSE) config -q && echo "compose OK"
 
-# --wait treats any exited container as a failure, so one-shots are waited on
-# separately; `compose wait` returns their exit code.
-DAEMONS  := postgres minio
-ONESHOTS := minio-init
+# --wait rejects any exited container, so only long-running services are listed.
+# The one-shots (minio-init, airflow-init) are pulled in as declared
+# dependencies and waited on via service_completed_successfully.
+DAEMONS := postgres minio airflow-apiserver airflow-scheduler airflow-dag-processor
 
 .PHONY: up
 up: ## Start stack, wait for healthy
-	$(COMPOSE) up -d --wait --wait-timeout 180 $(DAEMONS)
-	$(COMPOSE) up -d $(ONESHOTS)
-	$(COMPOSE) wait $(ONESHOTS)
+	$(COMPOSE) up -d --wait --wait-timeout 300 $(DAEMONS)
 
 .PHONY: down
 down: ## Stop stack, keep volumes
