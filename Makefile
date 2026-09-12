@@ -7,8 +7,10 @@ PIP     := $(PY) -m pip
 COMPOSE := docker compose
 TEST_IMAGE := mini-data-platform/airflow-test:local
 
-HADOLINT   := docker run --rm -i hadolint/hadolint hadolint
-SHELLCHECK := docker run --rm -v "$(PWD):/mnt" -w /mnt koalaman/shellcheck:stable
+# CI has these on the runner; locally they run as throwaway containers.
+# Override with HADOLINT=hadolint SHELLCHECK=shellcheck.
+HADOLINT   ?= docker run --rm -i hadolint/hadolint hadolint
+SHELLCHECK ?= docker run --rm -v "$(PWD):/mnt" -w /mnt koalaman/shellcheck:stable
 
 .DEFAULT_GOAL := help
 
@@ -39,6 +41,9 @@ lint: ## ruff, yamllint, hadolint, shellcheck
 	$(HADOLINT) - < docker/airflow/Dockerfile
 	$(SHELLCHECK) scripts/*.sh config/postgres/*.sh
 
+.PHONY: e2e-stack
+e2e-stack: up e2e ## Bring the stack up and run the end-to-end suite
+
 .PHONY: test
 test: ## Unit tests, no Docker
 	$(PY) -m pytest tests/unit -q
@@ -60,7 +65,9 @@ DAEMONS := postgres minio airflow-apiserver airflow-scheduler airflow-dag-proces
 
 .PHONY: up
 up: ## Start stack, wait for healthy, provision Metabase
-	$(COMPOSE) up -d --wait --wait-timeout 420 $(DAEMONS)
+	# --build because mini_platform is baked into the image, not bind-mounted:
+	# without it a host code edit silently never reaches the DAG.
+	$(COMPOSE) up -d --build --wait --wait-timeout 420 $(DAEMONS)
 	$(PY) -m scripts.provision_metabase
 
 .PHONY: provision

@@ -15,3 +15,4 @@ select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RET"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers"
+markers = ["integration: needs a running stack (make up)"]
