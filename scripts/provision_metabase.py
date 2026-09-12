@@ -174,8 +174,8 @@ def _existing_dashboard(base: str, session: str, name: str) -> int | None:
     return None
 
 
-def _create_card(base: str, session: str, db_id: int, card: dict) -> int:
-    payload = {
+def _card_payload(db_id: int, card: dict) -> dict:
+    return {
         "name": card["name"],
         "display": card["display"],
         "dataset_query": {
@@ -185,36 +185,62 @@ def _create_card(base: str, session: str, db_id: int, card: dict) -> int:
         },
         "visualization_settings": {},
     }
+
+
+def _upsert_card(base: str, session: str, db_id: int, card: dict, existing: dict[str, int]) -> int:
+    """Update the card with this name if it exists, else create it. Updating in
+    place keeps question history and avoids orphaning a card on every run."""
+    payload = _card_payload(db_id, card)
+    card_id = existing.get(card["name"])
+    if card_id is not None:
+        r = requests.put(
+            f"{base}/api/card/{card_id}", json=payload, headers=_headers(session), timeout=TIMEOUT
+        )
+        r.raise_for_status()
+        return card_id
+
     r = requests.post(f"{base}/api/card", json=payload, headers=_headers(session), timeout=TIMEOUT)
     r.raise_for_status()
     return r.json()["id"]
 
 
+def _cards_by_name(base: str, session: str) -> dict[str, int]:
+    cards = requests.get(f"{base}/api/card", headers=_headers(session), timeout=TIMEOUT).json()
+    return {c["name"]: c["id"] for c in cards if not c.get("archived")}
+
+
 def ensure_dashboard(base: str, session: str, db_id: int, cfg) -> int:
-    """Create the dashboard and its cards. Rebuilt from config if absent."""
+    """Reconcile the dashboard with config/dashboard.yml.
+
+    Edits to the config are applied to an existing dashboard, rather than
+    skipped — otherwise the file stops being the source of truth the moment the
+    dashboard exists.
+    """
     spec = _dashboard_spec(cfg)
     name = spec["dashboard"]["name"]
+    description = spec["dashboard"].get("description", "")
 
-    existing = _existing_dashboard(base, session, name)
-    if existing is not None:
-        print(f"metabase: dashboard '{name}' already exists (id {existing})")
-        return existing
+    dash_id = _existing_dashboard(base, session, name)
+    if dash_id is None:
+        r = requests.post(
+            f"{base}/api/dashboard",
+            json={"name": name, "description": description},
+            headers=_headers(session),
+            timeout=TIMEOUT,
+        )
+        r.raise_for_status()
+        dash_id = r.json()["id"]
+        action = "created"
+    else:
+        action = "reconciled"
 
-    r = requests.post(
-        f"{base}/api/dashboard",
-        json={"name": name, "description": spec["dashboard"].get("description", "")},
-        headers=_headers(session),
-        timeout=TIMEOUT,
-    )
-    r.raise_for_status()
-    dash_id = r.json()["id"]
-
+    known = _cards_by_name(base, session)
     dashcards = []
     for i, card in enumerate(spec["cards"]):
-        card_id = _create_card(base, session, db_id, card)
+        card_id = _upsert_card(base, session, db_id, card, known)
         dashcards.append(
             {
-                "id": -(i + 1),  # negative ids mark cards new to this dashboard
+                "id": -(i + 1),  # negative ids mark placements new to this PUT
                 "card_id": card_id,
                 "row": card["row"],
                 "col": card["col"],
@@ -225,12 +251,12 @@ def ensure_dashboard(base: str, session: str, db_id: int, cfg) -> int:
 
     r = requests.put(
         f"{base}/api/dashboard/{dash_id}",
-        json={"dashcards": dashcards},
+        json={"name": name, "description": description, "dashcards": dashcards},
         headers=_headers(session),
         timeout=TIMEOUT,
     )
     r.raise_for_status()
-    print(f"metabase: dashboard '{name}' created with {len(dashcards)} cards")
+    print(f"metabase: dashboard '{name}' {action} with {len(dashcards)} cards")
     return dash_id
 
 

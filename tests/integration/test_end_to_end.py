@@ -196,3 +196,21 @@ def test_bundled_sample_content_is_removed(metabase):
     names = {d["name"] for d in metabase.databases()}
     assert "Sample Database" not in names
     assert {d["name"] for d in metabase.get("/api/dashboard")} == {"Sales Overview"}
+
+
+def test_provisioning_twice_reconciles_rather_than_duplicating(metabase):
+    """config/dashboard.yml must stay the source of truth after the dashboard
+    exists; an earlier version skipped provisioning entirely once it did."""
+    from scripts.provision_metabase import provision
+
+    def card_names() -> list[str]:
+        dash = {d["name"]: d["id"] for d in metabase.get("/api/dashboard")}
+        detail = metabase.get(f"/api/dashboard/{dash['Sales Overview']}")
+        return sorted((c.get("card") or {}).get("name", "") for c in detail.get("dashcards", []))
+
+    before = card_names()
+    provision()
+    after = card_names()
+
+    assert before == after, f"provisioning changed the dashboard: {before} -> {after}"
+    assert len(after) == len(set(after)), f"duplicate cards on the dashboard: {after}"
