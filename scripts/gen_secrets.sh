@@ -8,7 +8,16 @@ cd "$(dirname "$0")/.."
 
 # Fernet needs urlsafe base64
 rand_b64() { openssl rand -base64 "${1:-32}" | tr '+/' '-_' | tr -d '=\n'; }
-rand_pw()  { openssl rand -base64 24 | tr -d '/+=\n' | cut -c1-24; }
+
+# Alphanumeric only, because these values are embedded in a Postgres DSN where
+# @ : / would break parsing. Digits are appended explicitly: Metabase rejects a
+# letters-only password as failing its complexity policy.
+rand_pw() {
+  local letters digits
+  letters=$(openssl rand -base64 48 | tr -dc 'A-Za-z' | cut -c1-20)
+  digits=$(printf '%d%d%d%d' $((RANDOM % 10)) $((RANDOM % 10)) $((RANDOM % 10)) $((RANDOM % 10)))
+  printf '%s%s' "$letters" "$digits"
+}
 
 set_var() {
   local key="$1" val="$2" current

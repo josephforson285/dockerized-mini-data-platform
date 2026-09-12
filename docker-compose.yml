@@ -160,6 +160,33 @@ services:
       start_period: 40s
       <<: *healthcheck-defaults
 
+  # Metabase keeps its own state in Postgres. The default embedded H2 database
+  # is lost whenever the container is recreated, taking dashboards with it.
+  metabase:
+    image: metabase/metabase:v0.63.17.2
+    restart: unless-stopped
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_HOST: postgres
+      MB_DB_PORT: 5432
+      MB_DB_DBNAME: ${METABASE_DB:?}
+      MB_DB_USER: ${POSTGRES_USER:?}
+      MB_DB_PASS: ${POSTGRES_PASSWORD:?}
+      MB_SITE_NAME: ${METABASE_SITE_NAME:-Mini Data Platform}
+      MB_ANON_TRACKING_ENABLED: "false"
+    ports:
+      - "${METABASE_PORT}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/health || exit 1"]
+      # Migrations on first boot take a while; fail slow rather than flap.
+      start_period: 120s
+      interval: 10s
+      timeout: 5s
+      retries: 24
+
 volumes:
   pgdata:
   miniodata:

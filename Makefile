@@ -56,11 +56,16 @@ validate: ## Check compose resolves
 # --wait rejects any exited container, so only long-running services are listed.
 # The one-shots (minio-init, airflow-init) are pulled in as declared
 # dependencies and waited on via service_completed_successfully.
-DAEMONS := postgres minio airflow-apiserver airflow-scheduler airflow-dag-processor
+DAEMONS := postgres minio airflow-apiserver airflow-scheduler airflow-dag-processor metabase
 
 .PHONY: up
-up: ## Start stack, wait for healthy
-	$(COMPOSE) up -d --wait --wait-timeout 300 $(DAEMONS)
+up: ## Start stack, wait for healthy, provision Metabase
+	$(COMPOSE) up -d --wait --wait-timeout 420 $(DAEMONS)
+	$(PY) -m scripts.provision_metabase
+
+.PHONY: provision
+provision: ## Re-run Metabase provisioning (idempotent)
+	$(PY) -m scripts.provision_metabase
 
 .PHONY: down
 down: ## Stop stack, keep volumes
