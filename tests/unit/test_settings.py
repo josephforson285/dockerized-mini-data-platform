@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 from data_generator.generate import generate
+from mini_platform.schema import RejectReason
 from mini_platform.settings import DEFAULT_CONFIG, ConfigError, load
 from mini_platform.transforms import clean
 
@@ -79,8 +80,18 @@ def test_adding_a_currency_to_config_changes_what_is_accepted(tmp_path):
     assert "unknown_currency" not in set(bad["reject_reason"])
 
 
-def test_raising_min_quantity_rejects_previously_valid_rows():
-    strict = load(DEFAULT_CONFIG)
-    df, _ = generate(100, seed=5, corrupt=0, duplicates=0, cfg=strict)
-    good_before, _ = clean(df, batch_id="b", cfg=strict)
-    assert len(good_before) == 100
+def test_raising_min_quantity_rejects_previously_valid_rows(tmp_path):
+    """Same data, stricter threshold — the rule must come from config alone."""
+    lenient = load(DEFAULT_CONFIG)
+    df, _ = generate(200, seed=5, corrupt=0, duplicates=0, cfg=lenient)
+
+    good_before, bad_before = clean(df, batch_id="b", cfg=lenient)
+    assert len(good_before) == 200
+    assert bad_before.empty
+
+    strict = load(write(tmp_path, lambda d: d["rules"].update(min_quantity=5)))
+    good_after, bad_after = clean(df, batch_id="b", cfg=strict)
+
+    assert len(good_after) < len(good_before)
+    assert len(good_after) + len(bad_after) == 200
+    assert set(bad_after["reject_reason"]) == {RejectReason.BAD_QUANTITY}
