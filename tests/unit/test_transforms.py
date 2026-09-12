@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from mini_platform.schema import CLEAN_COLUMNS, RAW_COLUMNS, RejectReason, SchemaError
+from mini_platform.schema import RejectReason, SchemaError, clean_columns, raw_columns
 from mini_platform.transforms import clean, normalise
 
 BASE = {
@@ -22,7 +22,7 @@ BASE = {
 
 def frame(*overrides: dict[str, str]) -> pd.DataFrame:
     rows = [BASE | o for o in (overrides or ({},))]
-    return pd.DataFrame(rows, columns=list(RAW_COLUMNS)).astype("string")
+    return pd.DataFrame(rows, columns=list(raw_columns())).astype("string")
 
 
 def test_normalise_trims_and_normalises_case():
@@ -81,7 +81,7 @@ def test_revenue_is_quantity_times_price():
 
 def test_clean_output_has_exactly_the_contract_columns():
     good, _ = clean(frame(), batch_id="b1")
-    assert list(good.columns) == list(CLEAN_COLUMNS)
+    assert list(good.columns) == list(clean_columns())
 
 
 def test_batch_id_is_stamped_on_both_outputs():

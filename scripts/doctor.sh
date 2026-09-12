@@ -55,26 +55,30 @@ fi
 
 echo
 echo "Ports"
+# Ports are declared once, in .env. No fallbacks here — a default would be a
+# second source of truth and would drift.
 if [[ -f .env ]]; then
   set -a
   # shellcheck disable=SC1091
   . ./.env
   set +a
+  for entry in \
+    "${POSTGRES_PORT}:postgres" \
+    "${AIRFLOW_PORT}:airflow" \
+    "${MINIO_API_PORT}:minio-api" \
+    "${MINIO_CONSOLE_PORT}:minio-console" \
+    "${METABASE_PORT}:metabase"
+  do
+    port="${entry%%:*}"; name="${entry##*:}"
+    if ss -ltn "sport = :${port}" 2>/dev/null | grep -q LISTEN; then
+      warn "port ${port} (${name}) in use"
+    else
+      ok "port ${port} (${name}) free"
+    fi
+  done
+else
+  warn "skipped — no .env"
 fi
-for entry in \
-  "${POSTGRES_PORT:-5435}:postgres" \
-  "${AIRFLOW_PORT:-8082}:airflow" \
-  "${MINIO_API_PORT:-9002}:minio-api" \
-  "${MINIO_CONSOLE_PORT:-9003}:minio-console" \
-  "${METABASE_PORT:-3001}:metabase"
-do
-  port="${entry%%:*}"; name="${entry##*:}"
-  if ss -ltn "sport = :${port}" 2>/dev/null | grep -q LISTEN; then
-    warn "port ${port} (${name}) in use"
-  else
-    ok "port ${port} (${name}) free"
-  fi
-done
 
 echo
 echo "Disk"

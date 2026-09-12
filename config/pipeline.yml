@@ -1,0 +1,66 @@
+---
+# Business rules and the data contract. Environment-independent: dev, CI and
+# prod all read this file unchanged. Anything that differs per environment
+# (hosts, ports, credentials) belongs in .env, not here.
+#
+# Override the path with MINI_PLATFORM_CONFIG.
+
+contract:
+  raw_columns:
+    - order_id
+    - order_ts
+    - customer_id
+    - product_id
+    - product_category
+    - quantity
+    - unit_price
+    - currency
+    - country
+    - payment_method
+  # Null in any of these makes a row unusable.
+  required_columns:
+    - order_id
+    - order_ts
+    - customer_id
+    - product_id
+    - quantity
+    - unit_price
+  derived_columns:
+    - revenue
+    - batch_id
+    - ingested_at
+  text_columns:
+    - order_id
+    - customer_id
+    - product_id
+    - product_category
+    - currency
+    - country
+    - payment_method
+
+rules:
+  allowed_currencies: [USD, EUR, GBP, GHS]
+  min_quantity: 1
+  min_unit_price: 0.01
+  revenue_precision: 2
+  dedupe_key: order_id
+  uppercase_columns: [currency, country]
+  lowercase_columns: [product_category]
+
+storage:
+  raw_prefix: sales/
+
+warehouse:
+  fact_table: fact_sales
+  reject_table: rejected_sales
+
+generator:
+  rows: 2000
+  seed: 42
+  corrupt: 60
+  duplicates: 40
+  start_date: "2026-01-01"
+  interval_minutes: 3
+  categories: [electronics, grocery, apparel, home, toys]
+  countries: [GH, NG, KE, ZA, US, GB]
+  payment_methods: [card, mobile_money, bank_transfer, cash]

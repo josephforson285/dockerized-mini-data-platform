@@ -1,5 +1,8 @@
 """Pure transforms: DataFrame in, DataFrames out. No Airflow, no I/O, no env —
-so the whole cleaning contract is unit-testable without a running stack."""
+so the whole cleaning contract is unit-testable without a running stack.
+
+Thresholds and column roles come from config/pipeline.yml, not from literals.
+"""
 
 from __future__ import annotations
 
@@ -7,40 +10,26 @@ import datetime as dt
 
 import pandas as pd
 
-from mini_platform.schema import (
-    CLEAN_COLUMNS,
-    CURRENCIES,
-    RAW_COLUMNS,
-    REQUIRED_COLUMNS,
-    RejectReason,
-    assert_raw_schema,
-)
-
-_TEXT_COLUMNS = (
-    "order_id",
-    "customer_id",
-    "product_id",
-    "product_category",
-    "currency",
-    "country",
-    "payment_method",
-)
+from mini_platform.schema import RejectReason, assert_raw_schema
+from mini_platform.settings import PipelineConfig, get
 
 
-def normalise(df: pd.DataFrame) -> pd.DataFrame:
+def normalise(df: pd.DataFrame, cfg: PipelineConfig | None = None) -> pd.DataFrame:
     """Tidy column names and text values. Does not drop anything."""
+    cfg = cfg or get()
     out = df.rename(columns=lambda c: str(c).strip().lower())
     assert_raw_schema(list(out.columns))
-    out = out.loc[:, list(RAW_COLUMNS)].copy()
+    out = out.loc[:, list(cfg.contract.raw_columns)].copy()
 
-    for col in _TEXT_COLUMNS:
+    for col in cfg.contract.text_columns:
         out[col] = out[col].astype("string").str.strip()
         # Empty strings are nulls; upstream CSVs express them both ways.
         out[col] = out[col].replace("", pd.NA)
 
-    out["currency"] = out["currency"].str.upper()
-    out["country"] = out["country"].str.upper()
-    out["product_category"] = out["product_category"].str.lower()
+    for col in cfg.rules.uppercase_columns:
+        out[col] = out[col].str.upper()
+    for col in cfg.rules.lowercase_columns:
+        out[col] = out[col].str.lower()
     return out
 
 
@@ -52,19 +41,19 @@ def _coerce(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _reject_reason(df: pd.DataFrame) -> pd.Series:
+def _reject_reason(df: pd.DataFrame, cfg: PipelineConfig) -> pd.Series:
     """First failing rule per row; empty string means the row is good."""
     reason = pd.Series("", index=df.index, dtype="string")
 
     def mark(mask: pd.Series, label: str) -> None:
         reason.loc[(reason == "") & mask.fillna(True)] = label
 
-    required = [c for c in REQUIRED_COLUMNS if c != "order_ts"]
+    required = [c for c in cfg.contract.required_columns if c != "order_ts"]
     mark(df[required].isna().any(axis=1), RejectReason.MISSING_REQUIRED)
     mark(df["order_ts"].isna(), RejectReason.BAD_TIMESTAMP)
-    mark(df["quantity"] <= 0, RejectReason.BAD_QUANTITY)
-    mark(df["unit_price"] <= 0, RejectReason.BAD_PRICE)
-    mark(~df["currency"].isin(CURRENCIES), RejectReason.UNKNOWN_CURRENCY)
+    mark(df["quantity"] < cfg.rules.min_quantity, RejectReason.BAD_QUANTITY)
+    mark(df["unit_price"] < cfg.rules.min_unit_price, RejectReason.BAD_PRICE)
+    mark(~df["currency"].isin(cfg.rules.allowed_currencies), RejectReason.UNKNOWN_CURRENCY)
     return reason
 
 
@@ -73,15 +62,17 @@ def clean(
     *,
     batch_id: str,
     ingested_at: dt.datetime | None = None,
+    cfg: PipelineConfig | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Split a raw frame into (clean, rejects).
 
     Rejects are returned rather than dropped so bad rows stay auditable.
     """
+    cfg = cfg or get()
     ingested_at = ingested_at or dt.datetime.now(dt.UTC)
 
-    frame = _coerce(normalise(df))
-    reason = _reject_reason(frame)
+    frame = _coerce(normalise(df, cfg))
+    reason = _reject_reason(frame, cfg)
 
     rejects = frame.loc[reason != ""].copy()
     rejects["reject_reason"] = reason.loc[reason != ""]
@@ -89,7 +80,7 @@ def clean(
     good = frame.loc[reason == ""].copy()
 
     # Retries and replays re-deliver the same file; keep the first occurrence.
-    dupes = good.duplicated(subset="order_id", keep="first")
+    dupes = good.duplicated(subset=cfg.rules.dedupe_key, keep="first")
     if dupes.any():
         dropped = good.loc[dupes].copy()
         dropped["reject_reason"] = RejectReason.DUPLICATE
@@ -98,10 +89,11 @@ def clean(
 
     good["quantity"] = good["quantity"].astype("int64")
     good["unit_price"] = good["unit_price"].astype("float64")
-    good["revenue"] = (good["quantity"] * good["unit_price"]).round(2)
+    good["revenue"] = (good["quantity"] * good["unit_price"]).round(cfg.rules.revenue_precision)
     good["batch_id"] = batch_id
     good["ingested_at"] = ingested_at
 
-    good = good.loc[:, list(CLEAN_COLUMNS)].sort_values("order_ts").reset_index(drop=True)
+    good = good.loc[:, list(cfg.contract.clean_columns)]
+    good = good.sort_values("order_ts").reset_index(drop=True)
     rejects["batch_id"] = batch_id
     return good, rejects.reset_index(drop=True)

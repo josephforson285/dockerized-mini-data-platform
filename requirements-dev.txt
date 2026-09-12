@@ -14,6 +14,7 @@ requests==2.34.2
 
 # config + synthetic data
 python-dotenv==1.2.3
+PyYAML==6.0.3
 Faker==40.38.0
 
 # quality

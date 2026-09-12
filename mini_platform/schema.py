@@ -1,53 +1,34 @@
-"""Data contract. Imported by the transforms, the tests and the DAG, so there
-is exactly one definition of what a valid row looks like."""
+"""Data contract, sourced from config/pipeline.yml. One definition of a valid
+row, shared by the transforms, the tests and the DAG."""
 
 from __future__ import annotations
 
-RAW_COLUMNS: tuple[str, ...] = (
-    "order_id",
-    "order_ts",
-    "customer_id",
-    "product_id",
-    "product_category",
-    "quantity",
-    "unit_price",
-    "currency",
-    "country",
-    "payment_method",
-)
-
-# Null in any of these makes the row unusable.
-REQUIRED_COLUMNS: tuple[str, ...] = (
-    "order_id",
-    "order_ts",
-    "customer_id",
-    "product_id",
-    "quantity",
-    "unit_price",
-)
-
-DERIVED_COLUMNS: tuple[str, ...] = ("revenue", "batch_id", "ingested_at")
-
-CLEAN_COLUMNS: tuple[str, ...] = RAW_COLUMNS + DERIVED_COLUMNS
-
-CURRENCIES: tuple[str, ...] = ("USD", "EUR", "GBP", "GHS")
+from mini_platform.settings import get
 
 
 class RejectReason:
     MISSING_REQUIRED = "missing_required_field"
     BAD_TIMESTAMP = "unparseable_timestamp"
-    BAD_QUANTITY = "quantity_not_positive"
-    BAD_PRICE = "price_not_positive"
+    BAD_QUANTITY = "quantity_below_minimum"
+    BAD_PRICE = "price_below_minimum"
     UNKNOWN_CURRENCY = "unknown_currency"
-    DUPLICATE = "duplicate_order_id"
+    DUPLICATE = "duplicate_key"
 
 
 class SchemaError(ValueError):
-    """Raised when the frame is structurally wrong — a pipeline bug or a
-    changed upstream contract, not a bad row."""
+    """Frame is structurally wrong — a pipeline bug or a changed upstream
+    contract, not a bad row."""
+
+
+def raw_columns() -> tuple[str, ...]:
+    return get().contract.raw_columns
+
+
+def clean_columns() -> tuple[str, ...]:
+    return get().contract.clean_columns
 
 
 def assert_raw_schema(columns: list[str]) -> None:
-    missing = [c for c in RAW_COLUMNS if c not in columns]
+    missing = [c for c in raw_columns() if c not in columns]
     if missing:
         raise SchemaError(f"missing columns: {', '.join(missing)}")
