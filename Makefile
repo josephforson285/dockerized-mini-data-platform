@@ -50,9 +50,16 @@ dags: ## Fail on any DAG import error
 validate: ## Check compose resolves
 	$(COMPOSE) config -q && echo "compose OK"
 
+# --wait treats any exited container as a failure, so one-shots are waited on
+# separately; `compose wait` returns their exit code.
+DAEMONS  := postgres minio
+ONESHOTS := minio-init
+
 .PHONY: up
 up: ## Start stack, wait for healthy
-	$(COMPOSE) up -d --wait
+	$(COMPOSE) up -d --wait --wait-timeout 180 $(DAEMONS)
+	$(COMPOSE) up -d $(ONESHOTS)
+	$(COMPOSE) wait $(ONESHOTS)
 
 .PHONY: down
 down: ## Stop stack, keep volumes

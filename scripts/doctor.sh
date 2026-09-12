@@ -7,13 +7,17 @@ ok()   { printf '  \033[32mOK\033[0m    %s\n' "$1"; }
 bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; fail=1; }
 warn() { printf '  \033[33mWARN\033[0m  %s\n' "$1"; }
 
+check() {  # check <label> <command...>
+  local label="$1"; shift
+  if "$@" >/dev/null 2>&1; then ok "$label"; else bad "$label"; fi
+}
+
 echo "Toolchain"
-for tool in docker git make jq curl; do
-  if command -v "$tool" >/dev/null 2>&1; then ok "$tool"; else bad "$tool missing"; fi
+for tool in docker git make jq curl openssl; do
+  check "$tool" command -v "$tool"
 done
-docker compose version >/dev/null 2>&1 && ok "docker compose" || bad "docker compose plugin missing"
-docker info >/dev/null 2>&1 && ok "docker daemon reachable without sudo" \
-  || bad "cannot reach docker daemon (is the user in the docker group?)"
+check "docker compose plugin" docker compose version
+check "docker daemon reachable without sudo" docker info
 
 echo
 echo "Python"
@@ -25,8 +29,8 @@ fi
 
 # venvs do not shield against PYTHONPATH.
 if [[ -n "${PYTHONPATH:-}" ]]; then
-  warn "PYTHONPATH is set: ${PYTHONPATH}"
-  warn "the Makefile strips it per-call; never invoke .venv/bin/python directly"
+  warn "PYTHONPATH is set; the Makefile strips it per-call"
+  warn "never invoke .venv/bin/python directly"
 else
   ok "PYTHONPATH is empty"
 fi
@@ -34,18 +38,29 @@ fi
 if [[ -x .venv/bin/python ]]; then
   leaked=$(.venv/bin/python -c \
     "import sys; print(':'.join(p for p in sys.path if 'ros' in p.lower() or 'MLprojs' in p))" 2>/dev/null)
-  [[ -z "$leaked" ]] && ok "no foreign paths leak into the venv" \
-                     || warn "unguarded venv would import from: ${leaked}"
+  if [[ -z "$leaked" ]]; then
+    ok "no foreign paths leak into the venv"
+  else
+    warn "unguarded venv would import from: ${leaked}"
+  fi
 fi
 
 echo
 echo "Config"
-[[ -f .env ]] && ok ".env present" || bad ".env missing — run: cp .env.example .env && make secrets"
+if [[ -f .env ]]; then
+  ok ".env present"
+else
+  bad ".env missing — run: cp .env.example .env && make secrets"
+fi
 
 echo
 echo "Ports"
-# shellcheck disable=SC1091
-[[ -f .env ]] && set -a && . ./.env && set +a
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
 for entry in \
   "${POSTGRES_PORT:-5435}:postgres" \
   "${AIRFLOW_PORT:-8082}:airflow" \
@@ -55,7 +70,7 @@ for entry in \
 do
   port="${entry%%:*}"; name="${entry##*:}"
   if ss -ltn "sport = :${port}" 2>/dev/null | grep -q LISTEN; then
-    warn "port ${port} (${name}) already in use"
+    warn "port ${port} (${name}) in use"
   else
     ok "port ${port} (${name}) free"
   fi
@@ -64,8 +79,15 @@ done
 echo
 echo "Disk"
 avail=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
-(( avail >= 10 )) && ok "${avail}G free on /" || bad "only ${avail}G free on / — need ~10G"
+if (( avail >= 10 )); then
+  ok "${avail}G free on /"
+else
+  bad "only ${avail}G free on / — need ~10G"
+fi
 
 echo
-if (( fail )); then echo "doctor: FAILED"; exit 1; fi
+if (( fail )); then
+  echo "doctor: FAILED"
+  exit 1
+fi
 echo "doctor: all good"

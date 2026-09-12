@@ -1,0 +1,15 @@
+---
+extends: default
+
+ignore: |
+  .venv/
+  out/
+
+rules:
+  line-length:
+    max: 100
+  # GitHub Actions uses `on:`, which YAML 1.1 reads as boolean.
+  truthy:
+    allowed-values: ["true", "false", "on"]
+  comments:
+    min-spaces-from-content: 1
