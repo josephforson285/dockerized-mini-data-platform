@@ -16,11 +16,14 @@ import sys
 import time
 
 import requests
+import yaml
 
 from mini_platform.config import load_env
+from mini_platform.settings import REPO_ROOT, get
 
 TIMEOUT = 30
 DB_DISPLAY_NAME = "Analytics"
+DASHBOARD_CONFIG = REPO_ROOT / "config" / "dashboard.yml"
 
 
 def _base_url() -> str:
@@ -127,8 +130,113 @@ def sync_schema(base: str, session: str, db_id: int) -> None:
     ).raise_for_status()
 
 
+def _headers(session: str) -> dict[str, str]:
+    return {"X-Metabase-Session": session}
+
+
+def remove_bundled_examples(base: str, session: str) -> None:
+    """Metabase ships a demo database plus an Examples collection of dashboards.
+    Remove both, so the instance shows only this platform's data."""
+    for db in _databases(base, session):
+        if db.get("is_sample") or db["name"] == "Sample Database":
+            requests.delete(
+                f"{base}/api/database/{db['id']}", headers=_headers(session), timeout=TIMEOUT
+            )
+            print("metabase: removed the bundled Sample Database")
+
+    collections = requests.get(
+        f"{base}/api/collection", headers=_headers(session), timeout=TIMEOUT
+    ).json()
+    for col in collections:
+        if col.get("is_sample") and not col.get("archived"):
+            requests.put(
+                f"{base}/api/collection/{col['id']}",
+                json={"archived": True},
+                headers=_headers(session),
+                timeout=TIMEOUT,
+            )
+            print(f"metabase: archived the bundled '{col['name']}' collection")
+
+
+def _dashboard_spec(cfg) -> dict:
+    spec = yaml.safe_load(DASHBOARD_CONFIG.read_text())
+    for card in spec["cards"]:
+        card["sql"] = card["sql"].format(fact=cfg.fact_table, rejects=cfg.reject_table)
+    return spec
+
+
+def _existing_dashboard(base: str, session: str, name: str) -> int | None:
+    for d in requests.get(
+        f"{base}/api/dashboard", headers=_headers(session), timeout=TIMEOUT
+    ).json():
+        if d["name"] == name:
+            return d["id"]
+    return None
+
+
+def _create_card(base: str, session: str, db_id: int, card: dict) -> int:
+    payload = {
+        "name": card["name"],
+        "display": card["display"],
+        "dataset_query": {
+            "type": "native",
+            "native": {"query": card["sql"]},
+            "database": db_id,
+        },
+        "visualization_settings": {},
+    }
+    r = requests.post(f"{base}/api/card", json=payload, headers=_headers(session), timeout=TIMEOUT)
+    r.raise_for_status()
+    return r.json()["id"]
+
+
+def ensure_dashboard(base: str, session: str, db_id: int, cfg) -> int:
+    """Create the dashboard and its cards. Rebuilt from config if absent."""
+    spec = _dashboard_spec(cfg)
+    name = spec["dashboard"]["name"]
+
+    existing = _existing_dashboard(base, session, name)
+    if existing is not None:
+        print(f"metabase: dashboard '{name}' already exists (id {existing})")
+        return existing
+
+    r = requests.post(
+        f"{base}/api/dashboard",
+        json={"name": name, "description": spec["dashboard"].get("description", "")},
+        headers=_headers(session),
+        timeout=TIMEOUT,
+    )
+    r.raise_for_status()
+    dash_id = r.json()["id"]
+
+    dashcards = []
+    for i, card in enumerate(spec["cards"]):
+        card_id = _create_card(base, session, db_id, card)
+        dashcards.append(
+            {
+                "id": -(i + 1),  # negative ids mark cards new to this dashboard
+                "card_id": card_id,
+                "row": card["row"],
+                "col": card["col"],
+                "size_x": card["size_x"],
+                "size_y": card["size_y"],
+            }
+        )
+
+    r = requests.put(
+        f"{base}/api/dashboard/{dash_id}",
+        json={"dashcards": dashcards},
+        headers=_headers(session),
+        timeout=TIMEOUT,
+    )
+    r.raise_for_status()
+    print(f"metabase: dashboard '{name}' created with {len(dashcards)} cards")
+    return dash_id
+
+
 def provision() -> int:
     load_env()
+    cfg = get()
     base = _base_url()
     wait_until_healthy(base)
 
@@ -143,6 +251,9 @@ def provision() -> int:
     db_id = ensure_database(base, session)
     sync_schema(base, session, db_id)
     print(f"metabase: '{DB_DISPLAY_NAME}' is database id {db_id}, schema sync requested")
+
+    remove_bundled_examples(base, session)
+    ensure_dashboard(base, session, db_id, cfg)
     return db_id
 
 

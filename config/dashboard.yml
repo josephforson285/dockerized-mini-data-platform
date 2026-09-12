@@ -1,0 +1,107 @@
+---
+# Dashboard definition, provisioned through the Metabase API so it is
+# reproducible rather than hand-built. {fact} and {rejects} are substituted
+# with the table names from pipeline.yml, so they are declared in one place.
+
+dashboard:
+  name: Sales Overview
+  description: Revenue KPIs, trends and ingestion data quality.
+
+cards:
+  - name: Total revenue
+    display: scalar
+    row: 0
+    col: 0
+    size_x: 6
+    size_y: 3
+    sql: SELECT round(sum(revenue), 2) AS total_revenue FROM {fact}
+
+  - name: Orders
+    display: scalar
+    row: 0
+    col: 6
+    size_x: 6
+    size_y: 3
+    sql: SELECT count(*) AS orders FROM {fact}
+
+  - name: Average order value
+    display: scalar
+    row: 0
+    col: 12
+    size_x: 6
+    size_y: 3
+    sql: SELECT round(avg(revenue), 2) AS avg_order_value FROM {fact}
+
+  - name: Rows quarantined
+    display: scalar
+    row: 0
+    col: 18
+    size_x: 6
+    size_y: 3
+    sql: SELECT count(*) AS rejected_rows FROM {rejects}
+
+  - name: Revenue trend by day
+    display: line
+    row: 3
+    col: 0
+    size_x: 24
+    size_y: 6
+    sql: |
+      SELECT date_trunc('day', order_ts) AS day,
+             round(sum(revenue), 2)      AS revenue
+      FROM {fact}
+      GROUP BY 1
+      ORDER BY 1
+
+  - name: Revenue by category
+    display: bar
+    row: 9
+    col: 0
+    size_x: 12
+    size_y: 6
+    sql: |
+      SELECT product_category,
+             round(sum(revenue), 2) AS revenue
+      FROM {fact}
+      GROUP BY 1
+      ORDER BY revenue DESC
+
+  - name: Revenue by country
+    display: bar
+    row: 9
+    col: 12
+    size_x: 12
+    size_y: 6
+    sql: |
+      SELECT country,
+             round(sum(revenue), 2) AS revenue
+      FROM {fact}
+      GROUP BY 1
+      ORDER BY revenue DESC
+
+  - name: Orders by payment method
+    display: pie
+    row: 15
+    col: 0
+    size_x: 12
+    size_y: 6
+    sql: |
+      SELECT payment_method,
+             count(*) AS orders
+      FROM {fact}
+      GROUP BY 1
+      ORDER BY orders DESC
+
+  # Data quality is a first-class KPI: rejected rows are visible, not hidden.
+  - name: Rejected rows by reason
+    display: row
+    row: 15
+    col: 12
+    size_x: 12
+    size_y: 6
+    sql: |
+      SELECT reject_reason,
+             count(*) AS rows
+      FROM {rejects}
+      GROUP BY 1
+      ORDER BY rows DESC
