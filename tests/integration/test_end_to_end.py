@@ -14,7 +14,7 @@ import pytest
 from psycopg import sql
 
 from data_generator.generate import generate
-from mini_platform import storage
+from mini_platform import storage, warehouse
 from mini_platform.config import MinioSettings
 
 pytestmark = pytest.mark.integration
@@ -26,6 +26,10 @@ ROWS, SEED, CORRUPT, DUPLICATES = 600, 21, 48, 32
 @pytest.fixture
 def uploaded_batch(batch_id, cfg, conn, tmp_path: Path):
     """Generate a batch, upload it, and clean up both stores afterwards."""
+    # A cold stack has no warehouse tables until the first DAG run; teardown
+    # must not depend on a test having created them.
+    warehouse.ensure_schema(conn, cfg)
+
     df, manifest = generate(ROWS, SEED, CORRUPT, DUPLICATES, cfg)
     manifest["batch_id"] = batch_id
 
@@ -138,8 +142,7 @@ def test_metabase_serves_the_warehouse(uploaded_batch, airflow, metabase, cfg, b
     assert db is not None, "Analytics database is not registered in Metabase"
     assert db["engine"] == "postgres"
 
-    meta = metabase.get(f"/api/database/{db['id']}/metadata")
-    tables = {t["name"] for t in meta.get("tables", [])}
+    tables = metabase.sync_and_await_table(db["id"], cfg.fact_table)
     assert cfg.fact_table in tables, f"Metabase cannot see {cfg.fact_table}; sees {sorted(tables)}"
 
 
@@ -149,3 +152,47 @@ def test_manifest_is_written_alongside_the_batch(tmp_path, cfg):
     (tmp_path / "m.json").write_text(json.dumps(manifest))
     assert manifest["rows_written"] == len(df)
     assert manifest["expected_clean"] + manifest["corrupted"] == 100
+
+
+def test_dashboard_exists_with_kpis_and_trends(uploaded_batch, airflow, metabase, batch_id):
+    """Part 3 of the brief: a dashboard of KPIs and trends, not just a connection."""
+    airflow.unpause(DAG_ID)
+    airflow.run_to_completion(DAG_ID, {"batch_id": batch_id})
+
+    dashboards = {d["name"]: d["id"] for d in metabase.get("/api/dashboard")}
+    assert "Sales Overview" in dashboards, f"no Sales Overview dashboard; found {dashboards}"
+
+    detail = metabase.get(f"/api/dashboard/{dashboards['Sales Overview']}")
+    cards = detail.get("dashcards", [])
+    names = {(c.get("card") or {}).get("name") for c in cards}
+
+    assert len(cards) >= 8, f"expected a full dashboard, got {len(cards)} cards"
+    # A KPI scalar and a time trend are both required by the brief.
+    assert "Total revenue" in names
+    assert "Revenue trend by day" in names
+    displays = {(c.get("card") or {}).get("display") for c in cards}
+    assert "scalar" in displays and "line" in displays
+
+
+def test_every_dashboard_card_returns_data(uploaded_batch, airflow, metabase, batch_id):
+    """A dashboard whose cards error is worse than no dashboard."""
+    airflow.unpause(DAG_ID)
+    airflow.run_to_completion(DAG_ID, {"batch_id": batch_id})
+
+    dashboards = {d["name"]: d["id"] for d in metabase.get("/api/dashboard")}
+    detail = metabase.get(f"/api/dashboard/{dashboards['Sales Overview']}")
+
+    failures = []
+    for dc in detail.get("dashcards", []):
+        name = (dc.get("card") or {}).get("name", dc["card_id"])
+        result = metabase.post(f"/api/card/{dc['card_id']}/query")
+        if result.get("status") != "completed" or not result.get("data", {}).get("rows"):
+            failures.append((name, result.get("error")))
+    assert not failures, f"cards returned no data: {failures}"
+
+
+def test_bundled_sample_content_is_removed(metabase):
+    """The deliverable should show this platform's data, not Metabase's demo."""
+    names = {d["name"] for d in metabase.databases()}
+    assert "Sample Database" not in names
+    assert {d["name"] for d in metabase.get("/api/dashboard")} == {"Sales Overview"}

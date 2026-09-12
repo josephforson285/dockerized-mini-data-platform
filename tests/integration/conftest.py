@@ -121,6 +121,26 @@ class MetabaseClient:
         r.raise_for_status()
         return r.json()
 
+    def post(self, path: str) -> dict:
+        r = requests.post(
+            f"{self.base}{path}", headers={"X-Metabase-Session": self.session}, timeout=60
+        )
+        return r.json() if r.ok else {"status": "error", "error": r.status_code}
+
+    def sync_and_await_table(self, db_id: int, table: str, timeout: int = 120) -> set[str]:
+        """Metabase discovers tables on its own schedule; a fresh instance has
+        not seen them yet. Ask for a sync and wait for the table to appear."""
+        deadline = time.time() + timeout
+        seen: set[str] = set()
+        while time.time() < deadline:
+            self.post(f"/api/database/{db_id}/sync_schema")
+            meta = self.get(f"/api/database/{db_id}/metadata")
+            seen = {t["name"] for t in meta.get("tables", [])}
+            if table in seen:
+                return seen
+            time.sleep(4)
+        return seen
+
     def databases(self) -> list[dict]:
         body = self.get("/api/database")
         return body["data"] if isinstance(body, dict) else body
