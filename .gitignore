@@ -1,0 +1,33 @@
+# Secrets — only .env.example is tracked
+.env
+*.env
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Airflow runtime junk
+logs/
+airflow.db
+airflow.cfg
+webserver_config.py
+standalone_admin_password.txt
+
+# Service data — named volumes are used, but guard against stray bind mounts
+data/
+volumes/
+pgdata/
+minio-data/
+metabase-data/
+
+# Local artifacts
+*.log
+.DS_Store
+tmp/
+out/

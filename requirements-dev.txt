@@ -1,0 +1,22 @@
+# Host-side toolchain: transforms, tests, linting, E2E clients.
+# Airflow itself is never installed here — it only runs in its container.
+# Pinned so CI and local resolve identically.
+
+# data
+pandas==3.0.5
+numpy==2.5.3
+pyarrow==25.0.1
+
+# clients
+boto3==1.43.93
+psycopg[binary]==3.3.5
+requests==2.34.2
+
+# config + synthetic data
+python-dotenv==1.2.3
+Faker==40.38.0
+
+# quality
+pytest==9.1.1
+ruff==0.16.7
+yamllint==1.38.0
