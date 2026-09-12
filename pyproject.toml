@@ -1,0 +1,17 @@
+[project]
+name = "mini-data-platform"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 100
+# The Airflow image runs 3.12; the host venv is 3.14. Target the lower one.
+target-version = "py312"
+exclude = [".venv", "out"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RET"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
