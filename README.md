@@ -10,7 +10,7 @@ flowchart LR
     M -->|discover + read| A[Airflow 3<br/>sales_pipeline]
     A -->|clean rows| P[(Postgres<br/>fact_sales)]
     A -->|bad rows + reason| R[(Postgres<br/>rejected_sales)]
-    P --> B[Metabase]
+    P --> B[Metabase<br/>Sales Overview]
 ```
 
 ## Quickstart
@@ -24,7 +24,8 @@ make seed                      # generate a batch and upload it to MinIO
 ```
 
 Then unpause `sales_pipeline` in the Airflow UI, or run `make e2e` to drive the
-whole flow and assert the result.
+whole flow and assert the result. The **Sales Overview** dashboard is already
+built in Metabase and populates as soon as data lands.
 
 | Service | URL | Credentials |
 | :-- | :-- | :-- |
@@ -48,6 +49,7 @@ Ports avoid a host Postgres on 5432 and MySQL on 3306. All values live in
 | `make dags` | parse the DAG bag inside the Airflow image |
 | `make e2e` | end-to-end suite against the running stack |
 | `make ci` | what CI's fast tier runs |
+| `make provision` | re-run Metabase provisioning (idempotent) |
 | `make nuke` | stop and delete this project's volumes |
 
 ## How the pipeline works
@@ -61,6 +63,23 @@ Ports avoid a host Postgres on 5432 and MySQL on 3306. All values live in
 4. `mini_platform.warehouse` stages rows in a temp table, deletes the batch's
    previous attempt, then upserts on `order_id`.
 5. Metabase reads `fact_sales` from the `analytics` database.
+
+## Dashboard
+
+`make up` provisions a **Sales Overview** dashboard from
+[`config/dashboard.yml`](config/dashboard.yml) through the Metabase API — it is
+never clicked together by hand, so it rebuilds identically on any machine.
+
+| KPIs | Trends and breakdowns |
+| :-- | :-- |
+| Total revenue | Revenue by day |
+| Orders | Revenue by category |
+| Average order value | Revenue by country |
+| Rows quarantined | Orders by payment method |
+| | Rejected rows by reason |
+
+Quarantined rows sit on the dashboard deliberately: ingestion quality is a KPI,
+not something to hide in a log.
 
 ## Design notes
 
@@ -104,17 +123,19 @@ which is what lets CI verify the final hop.
 - **Publish** — on `main`, pushes the runtime image to GHCR tagged
   `sha-<commit>`. Never `latest`: a mutable tag is how CI goes green while the
   environment keeps running older code.
+- **Deploy to test** — pulls that exact published image and runs the stack with
+  `--no-build`, then smoke-tests the data flow through it. Nothing is rebuilt,
+  so what is verified is the artifact that would ship.
 
 CI calls the same `make` targets you do, so the runbook and the pipeline cannot
 drift. No repository secrets are needed; GHCR uses the built-in `GITHUB_TOKEN`.
 
-### Deploying to a real environment
+### Promoting to production
 
-The `publish` job produces the immutable artifact a test environment would run.
-Promoting it to a server is a deploy step against a tagged digest, gated behind
-a GitHub Environment with required reviewers. That step is intentionally not
-wired up here — there is no server behind this lab, and a fake deploy would be
-worse than an honest gap.
+`deploy-test` deploys to an ephemeral environment on the runner. Promoting the
+same digest to a long-lived host would be one further job gated behind a GitHub
+Environment with required reviewers. That is not wired up: there is no server
+behind this lab, and a fake deploy would be worse than an honest gap.
 
 ## Gotchas worth knowing
 
@@ -131,13 +152,18 @@ The host exports ROS2's Python 3.12 paths on `PYTHONPATH`, which leak into a
 3.14 venv. Every Python call in the Makefile strips it; never invoke
 `.venv/bin/python` directly.
 
+## Brief compliance
+
+[`docs/brief-compliance.md`](docs/brief-compliance.md) maps every clause of the
+brief to its implementation and the test that proves it.
+
 ## Layout
 
 ```text
 dags/                 Airflow DAG definitions
 mini_platform/        transforms, warehouse, storage, config — no Airflow imports
 data_generator/       seeded synthetic batches with a manifest
-config/               pipeline.yml (rules) and Postgres init
+config/               pipeline.yml (rules), dashboard.yml, Postgres init
 docker/airflow/       runtime and test image stages
 scripts/              doctor, secrets, Metabase provisioning
 tests/unit/           fast, no Docker
