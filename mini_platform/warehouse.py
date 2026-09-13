@@ -160,17 +160,6 @@ def _delete_batch(conn: psycopg.Connection, table: str, batch_id: str) -> None:
     conn.commit()
 
 
-def count_rows(conn: psycopg.Connection, table: str, batch_id: str | None = None) -> int:
-    stmt = sql.SQL("SELECT count(*) FROM {t}").format(t=_ident(table))
-    params: tuple = ()
-    if batch_id is not None:
-        stmt = sql.SQL("{base} WHERE batch_id = %s").format(base=stmt)
-        params = (batch_id,)
-    with conn.cursor() as cur:
-        cur.execute(stmt, params)
-        return cur.fetchone()[0]
-
-
 def loaded_batches(conn: psycopg.Connection, cfg: PipelineConfig | None = None) -> set[str]:
     cfg = cfg or get()
     with conn.cursor() as cur:

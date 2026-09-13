@@ -25,7 +25,8 @@ x-airflow-common: &airflow-common
     dockerfile: docker/airflow/Dockerfile
   image: ${AIRFLOW_IMAGE:-mini-data-platform/airflow}:${IMAGE_TAG:-local}
   restart: unless-stopped
-  # Airflow writes logs as this uid; a mismatch breaks the mounted volume.
+  # Must stay 50000: Python skips site-packages it does not own, so a foreign
+  # uid makes `import airflow` fail outright.
   user: "${AIRFLOW_UID}:0"
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
