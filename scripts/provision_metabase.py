@@ -24,6 +24,9 @@ from mini_platform.settings import REPO_ROOT, get
 TIMEOUT = 30
 DB_DISPLAY_NAME = "Analytics"
 DASHBOARD_CONFIG = REPO_ROOT / "config" / "dashboard.yml"
+# Stamped on every card this script owns, so cards dropped from the config can
+# be archived without touching questions a user created by hand.
+MANAGED_MARKER = "Managed by config/dashboard.yml — edits will be overwritten."
 
 
 def _base_url() -> str:
@@ -177,6 +180,7 @@ def _existing_dashboard(base: str, session: str, name: str) -> int | None:
 def _card_payload(db_id: int, card: dict) -> dict:
     return {
         "name": card["name"],
+        "description": MANAGED_MARKER,
         "display": card["display"],
         "dataset_query": {
             "type": "native",
@@ -207,6 +211,25 @@ def _upsert_card(base: str, session: str, db_id: int, card: dict, existing: dict
 def _cards_by_name(base: str, session: str) -> dict[str, int]:
     cards = requests.get(f"{base}/api/card", headers=_headers(session), timeout=TIMEOUT).json()
     return {c["name"]: c["id"] for c in cards if not c.get("archived")}
+
+
+def _archive_dropped_cards(base: str, session: str, keep: set[str]) -> None:
+    """Archive managed cards no longer in the config. Without this, deleting a
+    card from dashboard.yml removes it from the dashboard but leaves the
+    question behind."""
+    cards = requests.get(f"{base}/api/card", headers=_headers(session), timeout=TIMEOUT).json()
+    for card in cards:
+        if card.get("archived") or card["name"] in keep:
+            continue
+        if card.get("description") != MANAGED_MARKER:
+            continue  # somebody's own question; leave it alone
+        requests.put(
+            f"{base}/api/card/{card['id']}",
+            json={"archived": True},
+            headers=_headers(session),
+            timeout=TIMEOUT,
+        )
+        print(f"metabase: archived '{card['name']}', no longer in the config")
 
 
 def ensure_dashboard(base: str, session: str, db_id: int, cfg) -> int:
@@ -256,6 +279,7 @@ def ensure_dashboard(base: str, session: str, db_id: int, cfg) -> int:
         timeout=TIMEOUT,
     )
     r.raise_for_status()
+    _archive_dropped_cards(base, session, {c["name"] for c in spec["cards"]})
     print(f"metabase: dashboard '{name}' {action} with {len(dashcards)} cards")
     return dash_id
 
