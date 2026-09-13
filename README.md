@@ -16,7 +16,7 @@ flowchart LR
 ## Quickstart
 
 ```bash
-make venv                      # Python 3.14 venv, pinned deps
+make venv                      # venv on Python 3.12+, pinned deps
 cp .env.example .env && make secrets
 make doctor                    # toolchain, ports, disk
 make up                        # build, start, wait healthy, provision Metabase

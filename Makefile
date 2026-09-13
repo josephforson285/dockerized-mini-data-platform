@@ -1,6 +1,11 @@
 SHELL := /bin/bash
 VENV  := .venv
 
+# First interpreter that satisfies pyproject's requires-python. Override with
+# `make venv PYTHON=/path/to/python3.12`; do not hardcode one machine's path.
+PYTHON ?= $(shell command -v python3.14 || command -v python3.13 \
+                  || command -v python3.12 || command -v python3)
+
 # Host exports ROS2 py3.12 paths on PYTHONPATH; they leak into the py3.14 venv.
 PY      := env -u PYTHONPATH $(VENV)/bin/python
 PIP     := $(PY) -m pip
@@ -21,7 +26,11 @@ help: ## Show targets
 
 .PHONY: venv
 venv: ## Create venv, install pinned deps
-	env -u PYTHONPATH /usr/bin/python3.14 -m venv $(VENV)
+	@test -n "$(PYTHON)" || { echo "no python3 found on PATH"; exit 1; }
+	@env -u PYTHONPATH $(PYTHON) -c "import sys; \
+		sys.exit(0) if sys.version_info >= (3, 12) else \
+		(print(f'need Python >= 3.12, got {sys.version.split()[0]}'), sys.exit(1))"
+	env -u PYTHONPATH $(PYTHON) -m venv $(VENV)
 	$(PIP) install -q --upgrade pip
 	$(PIP) install -q -r requirements-dev.txt
 
