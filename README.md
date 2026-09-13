@@ -153,6 +153,7 @@ behind this lab, and a fake deploy would be worse than an honest gap.
 | MinIO image will not pull | Docker Hub no longer serves `minio/minio`; images come from `quay.io` |
 | Code edit has no effect | `mini_platform` is baked into the image — `make up` rebuilds |
 | Metabase rejects a password | its complexity policy needs digits, which `make secrets` guarantees |
+| `password authentication failed for user "platform"` | volumes from an earlier run survived a new `make secrets`. Postgres only applies credentials to an empty data dir, so it kept the old ones. Restore the matching `.env`, or `make nuke && make secrets` to discard the data |
 
 The host exports ROS2's Python 3.12 paths on `PYTHONPATH`, which leak into a
 3.14 venv. Every Python call in the Makefile strips it; never invoke
