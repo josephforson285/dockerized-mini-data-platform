@@ -43,6 +43,9 @@ rules:
   min_quantity: 1
   min_unit_price: 0.01
   revenue_precision: 2
+  # A batch this bad is an upstream incident, not rows to quarantine; the run
+  # fails instead of loading it.
+  max_reject_ratio: 0.5
   dedupe_key: order_id
   uppercase_columns: [currency, country]
   lowercase_columns: [product_category]
