@@ -62,6 +62,7 @@ class PipelineConfig:
     raw_prefix: str
     fact_table: str
     reject_table: str
+    run_table: str
     source: Path = field(compare=False, default=DEFAULT_CONFIG)
 
 
@@ -113,6 +114,7 @@ def load(path: str | Path | None = None) -> PipelineConfig:
         raw_prefix=str(storage.get("raw_prefix", "sales/")),
         fact_table=str(warehouse.get("fact_table", "fact_sales")),
         reject_table=str(warehouse.get("reject_table", "rejected_sales")),
+        run_table=str(warehouse.get("run_table", "pipeline_runs")),
         source=p,
     )
     _validate(cfg)

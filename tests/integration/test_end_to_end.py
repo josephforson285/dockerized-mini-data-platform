@@ -40,7 +40,7 @@ def uploaded_batch(batch_id, cfg, conn, tmp_path: Path):
 
     yield manifest, key
 
-    for table in (cfg.fact_table, cfg.reject_table):
+    for table in (cfg.fact_table, cfg.reject_table, cfg.run_table):
         conn.execute(
             sql.SQL("DELETE FROM {t} WHERE batch_id = %s").format(t=sql.Identifier(table)),
             (batch_id,),
@@ -214,3 +214,23 @@ def test_provisioning_twice_reconciles_rather_than_duplicating(metabase):
 
     assert before == after, f"provisioning changed the dashboard: {before} -> {after}"
     assert len(after) == len(set(after)), f"duplicate cards on the dashboard: {after}"
+
+
+def test_each_run_is_recorded_for_audit(uploaded_batch, airflow, conn, cfg, batch_id):
+    """Airflow logs age out; the warehouse should still say what a run did."""
+    manifest, _ = uploaded_batch
+    airflow.unpause(DAG_ID)
+    airflow.run_to_completion(DAG_ID, {"batch_id": batch_id})
+
+    row = conn.execute(
+        sql.SQL("SELECT rows_read, rows_loaded, rows_rejected FROM {t} WHERE batch_id = %s").format(
+            t=sql.Identifier(cfg.run_table)
+        ),
+        (batch_id,),
+    ).fetchall()
+
+    assert len(row) == 1, f"expected exactly one audit row, got {len(row)}"
+    read, loaded, rejected = row[0]
+    assert loaded == manifest["expected_clean"]
+    assert rejected == manifest["expected_rejects"]
+    assert read == manifest["rows_written"]

@@ -86,6 +86,8 @@ def sales_pipeline():
             warehouse.ensure_schema(conn, cfg)
             loaded = warehouse.load_clean(good, batch_id, conn, cfg)
             rejected = warehouse.load_rejects(bad, batch_id, conn, cfg)
+            ratio = rejected / (loaded + rejected) if loaded + rejected else 0.0
+            warehouse.record_run(batch_id, len(raw), loaded, rejected, round(ratio, 4), conn, cfg)
 
         log.info("%s: %d loaded, %d rejected", batch_id, loaded, rejected)
         return {"batch_id": batch_id, "read": len(raw), "loaded": loaded, "rejected": rejected}
