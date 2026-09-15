@@ -56,6 +56,7 @@ storage:
 warehouse:
   fact_table: fact_sales
   reject_table: rejected_sales
+  run_table: pipeline_runs
 
 generator:
   rows: 2000

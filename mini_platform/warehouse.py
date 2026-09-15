@@ -33,6 +33,19 @@ CREATE INDEX IF NOT EXISTS {fact_batch_ix} ON {fact} (batch_id);
 CREATE INDEX IF NOT EXISTS {fact_ts_ix} ON {fact} (order_ts);
 """
 
+RUN_DDL = """
+CREATE TABLE IF NOT EXISTS {runs} (
+    run_id        bigserial PRIMARY KEY,
+    batch_id      text NOT NULL,
+    rows_read     integer NOT NULL,
+    rows_loaded   integer NOT NULL,
+    rows_rejected integer NOT NULL,
+    reject_ratio  numeric(5, 4) NOT NULL,
+    recorded_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS {runs_batch_ix} ON {runs} (batch_id);
+"""
+
 REJECT_DDL = """
 CREATE TABLE IF NOT EXISTS {reject} (
     reject_id      bigserial PRIMARY KEY,
@@ -63,6 +76,12 @@ def ensure_schema(conn: psycopg.Connection, cfg: PipelineConfig | None = None) -
             sql.SQL(REJECT_DDL).format(
                 reject=_ident(cfg.reject_table),
                 reject_batch_ix=_ident(f"ix_{cfg.reject_table}_batch"),
+            )
+        )
+        cur.execute(
+            sql.SQL(RUN_DDL).format(
+                runs=_ident(cfg.run_table),
+                runs_batch_ix=_ident(f"ix_{cfg.run_table}_batch"),
             )
         )
     conn.commit()
@@ -165,3 +184,29 @@ def loaded_batches(conn: psycopg.Connection, cfg: PipelineConfig | None = None) 
     with conn.cursor() as cur:
         cur.execute(sql.SQL("SELECT DISTINCT batch_id FROM {t}").format(t=_ident(cfg.fact_table)))
         return {r[0] for r in cur.fetchall()}
+
+
+def record_run(
+    batch_id: str,
+    rows_read: int,
+    rows_loaded: int,
+    rows_rejected: int,
+    reject_ratio: float,
+    conn: psycopg.Connection,
+    cfg: PipelineConfig | None = None,
+) -> None:
+    """One row per load, so a run stays reviewable after its Airflow logs age out."""
+    cfg = cfg or get()
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("DELETE FROM {t} WHERE batch_id = %s").format(t=_ident(cfg.run_table)),
+            (batch_id,),
+        )
+        cur.execute(
+            sql.SQL(
+                "INSERT INTO {t} (batch_id, rows_read, rows_loaded, rows_rejected, reject_ratio) "
+                "VALUES (%s, %s, %s, %s, %s)"
+            ).format(t=_ident(cfg.run_table)),
+            (batch_id, rows_read, rows_loaded, rows_rejected, reject_ratio),
+        )
+    conn.commit()
