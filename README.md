@@ -159,6 +159,24 @@ The host exports ROS2's Python 3.12 paths on `PYTHONPATH`, which leak into a
 3.14 venv. Every Python call in the Makefile strips it; never invoke
 `.venv/bin/python` directly.
 
+## Contributing
+
+`main` is protected: it takes no direct pushes, and a change merges only once
+`lint`, `unit tests`, `dag integrity` and `end-to-end` are green.
+
+```bash
+git switch -c fix/short-description
+# change, then:
+make ci                 # the fast tier, before pushing
+git push -u origin HEAD
+gh pr create --fill
+```
+
+Branches are short-lived — opened and merged the same day, deleted on merge.
+Long-lived branches defer integration, which is the opposite of what CI is for.
+Run `make e2e` locally for anything touching the pipeline; CI runs it too, but
+the feedback is ten minutes faster on your own stack.
+
 ## Brief compliance
 
 [`docs/brief-compliance.md`](docs/brief-compliance.md) maps every clause of the
