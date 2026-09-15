@@ -105,3 +105,27 @@ def test_one_row_yields_one_reason_even_with_several_faults():
     )
     assert len(good) == 0
     assert len(bad) == 1
+
+
+def test_quality_gate_passes_within_the_limit():
+    from mini_platform.transforms import assert_quality
+
+    clean_rows = frame(*[{"order_id": f"A{i}"} for i in range(9)])
+    reject_rows = frame({"order_id": "B1"})
+    assert assert_quality(clean_rows, reject_rows) == pytest.approx(0.1)
+
+
+def test_quality_gate_fails_a_mostly_bad_batch():
+    from mini_platform.transforms import QualityGateFailed, assert_quality
+
+    clean_rows = frame({"order_id": "A1"})
+    reject_rows = frame(*[{"order_id": f"B{i}"} for i in range(9)])
+    with pytest.raises(QualityGateFailed, match="90.0%"):
+        assert_quality(clean_rows, reject_rows)
+
+
+def test_quality_gate_tolerates_an_empty_batch():
+    from mini_platform.transforms import assert_quality
+
+    empty = frame().iloc[0:0]
+    assert assert_quality(empty, empty) == 0.0

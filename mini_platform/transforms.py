@@ -14,6 +14,32 @@ from mini_platform.schema import RejectReason, assert_raw_schema
 from mini_platform.settings import PipelineConfig, get
 
 
+class QualityGateFailed(RuntimeError):
+    """Too much of the batch was unusable to treat as ordinary quarantine."""
+
+
+def assert_quality(
+    clean: pd.DataFrame, rejects: pd.DataFrame, cfg: PipelineConfig | None = None
+) -> float:
+    """Raise when the reject ratio exceeds the configured limit.
+
+    Quarantining a few bad rows is normal. A batch that is mostly unusable is an
+    upstream incident: loading it would publish a misleading partial dataset.
+    """
+    cfg = cfg or get()
+    total = len(clean) + len(rejects)
+    if total == 0:
+        return 0.0
+
+    ratio = len(rejects) / total
+    if ratio > cfg.rules.max_reject_ratio:
+        raise QualityGateFailed(
+            f"{len(rejects)}/{total} rows rejected ({ratio:.1%}); "
+            f"limit is {cfg.rules.max_reject_ratio:.1%}"
+        )
+    return ratio
+
+
 def normalise(df: pd.DataFrame, cfg: PipelineConfig | None = None) -> pd.DataFrame:
     """Tidy column names and text values. Does not drop anything."""
     cfg = cfg or get()
