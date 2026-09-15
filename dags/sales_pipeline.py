@@ -15,7 +15,7 @@ from airflow.sdk import Param, dag, task
 from mini_platform import storage, warehouse
 from mini_platform.config import PostgresSettings, load_env
 from mini_platform.settings import get
-from mini_platform.transforms import clean
+from mini_platform.transforms import assert_quality, clean
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +82,10 @@ def sales_pipeline():
         raw = storage.read_csv(key)
         good, bad = clean(raw, batch_id=batch_id, cfg=cfg)
 
+        # Fail before writing: a mostly-bad batch is an upstream incident, and
+        # loading it would publish a misleading partial dataset.
+        reject_ratio = assert_quality(good, bad, cfg)
+
         with psycopg.connect(PostgresSettings.from_env().dsn) as conn:
             warehouse.ensure_schema(conn, cfg)
             loaded = warehouse.load_clean(good, batch_id, conn, cfg)
@@ -90,7 +94,13 @@ def sales_pipeline():
             warehouse.record_run(batch_id, len(raw), loaded, rejected, round(ratio, 4), conn, cfg)
 
         log.info("%s: %d loaded, %d rejected", batch_id, loaded, rejected)
-        return {"batch_id": batch_id, "read": len(raw), "loaded": loaded, "rejected": rejected}
+        return {
+            "batch_id": batch_id,
+            "read": len(raw),
+            "loaded": loaded,
+            "rejected": rejected,
+            "reject_ratio": round(reject_ratio, 4),
+        }
 
     @task
     def summarise(results: list[dict]) -> dict:

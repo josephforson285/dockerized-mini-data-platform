@@ -36,6 +36,7 @@ class Rules:
     min_quantity: int
     min_unit_price: float
     revenue_precision: int
+    max_reject_ratio: float
     dedupe_key: str
     uppercase_columns: tuple[str, ...]
     lowercase_columns: tuple[str, ...]
@@ -96,6 +97,7 @@ def load(path: str | Path | None = None) -> PipelineConfig:
             min_quantity=int(_require(rules, "min_quantity", "rules")),
             min_unit_price=float(_require(rules, "min_unit_price", "rules")),
             revenue_precision=int(rules.get("revenue_precision", 2)),
+            max_reject_ratio=float(rules.get("max_reject_ratio", 1.0)),
             dedupe_key=str(rules.get("dedupe_key", "order_id")),
             uppercase_columns=tuple(rules.get("uppercase_columns", ())),
             lowercase_columns=tuple(rules.get("lowercase_columns", ())),
@@ -136,6 +138,9 @@ def _validate(cfg: PipelineConfig) -> None:
 
     if not cfg.rules.allowed_currencies:
         raise ConfigError("allowed_currencies must not be empty")
+
+    if not 0 < cfg.rules.max_reject_ratio <= 1:
+        raise ConfigError(f"max_reject_ratio must be in (0, 1], got {cfg.rules.max_reject_ratio}")
 
     overlap = set(cfg.contract.raw_columns) & set(cfg.contract.derived_columns)
     if overlap:
