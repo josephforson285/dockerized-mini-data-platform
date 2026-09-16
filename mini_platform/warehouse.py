@@ -210,3 +210,54 @@ def record_run(
             (batch_id, rows_read, rows_loaded, rows_rejected, reject_ratio),
         )
     conn.commit()
+
+
+def verify_batch(
+    batch_id: str,
+    conn: psycopg.Connection,
+    cfg: PipelineConfig | None = None,
+) -> dict:
+    """Post-load assertions, run against what actually landed.
+
+    assert_quality checks the frame before writing; this checks the table after,
+    so a bug in the load itself cannot pass unnoticed.
+    """
+    cfg = cfg or get()
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("""
+                SELECT count(*),
+                       count(*) FILTER (WHERE customer_id IS NULL OR order_id IS NULL),
+                       count(*) FILTER (WHERE quantity < %s),
+                       count(*) FILTER (WHERE unit_price < %s),
+                       count(*) FILTER (WHERE currency <> ALL(%s)),
+                       count(*) FILTER (WHERE round(quantity * unit_price, 2) <> revenue),
+                       count(DISTINCT order_id)
+                FROM {fact} WHERE batch_id = %s
+            """).format(fact=_ident(cfg.fact_table)),
+            (
+                cfg.rules.min_quantity,
+                cfg.rules.min_unit_price,
+                list(cfg.rules.allowed_currencies),
+                batch_id,
+            ),
+        )
+        total, nulls, bad_qty, bad_price, bad_ccy, bad_revenue, distinct_ids = cur.fetchone()
+
+    failures = []
+    if total == 0:
+        failures.append("no rows loaded for this batch")
+    if nulls:
+        failures.append(f"{nulls} rows with a null required field")
+    if bad_qty:
+        failures.append(f"{bad_qty} rows below min_quantity")
+    if bad_price:
+        failures.append(f"{bad_price} rows below min_unit_price")
+    if bad_ccy:
+        failures.append(f"{bad_ccy} rows with a disallowed currency")
+    if bad_revenue:
+        failures.append(f"{bad_revenue} rows where revenue != quantity * unit_price")
+    if distinct_ids != total:
+        failures.append(f"{total - distinct_ids} duplicate order_id rows")
+
+    return {"rows": total, "failures": failures}
