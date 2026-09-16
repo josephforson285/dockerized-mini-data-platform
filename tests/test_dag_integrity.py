@@ -1,9 +1,5 @@
-"""Parse the DAG bag and fail on any import error.
-
-Runs inside the Airflow image (`make dags`), because that is the only place
-Airflow is installed. Catches the most common breakage — a DAG that no longer
-imports — in seconds, without starting a scheduler.
-"""
+"""Parse the DAG bag and fail on any import error. Runs inside the Airflow
+image, since that is the only place Airflow is installed."""
 
 from __future__ import annotations
 

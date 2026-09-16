@@ -1,9 +1,5 @@
-"""Environment-specific settings: hosts, ports, credentials.
-
-Values are required rather than defaulted, so a missing variable fails loudly
-at startup instead of silently connecting somewhere unintended. Business rules
-live in config/pipeline.yml — see mini_platform.settings.
-"""
+"""Hosts, ports, credentials. Required not defaulted, so a missing value fails
+loudly rather than connecting somewhere unintended. Rules live in settings.py."""
 
 from __future__ import annotations
 
@@ -45,8 +41,7 @@ class MinioSettings:
 
     @classmethod
     def from_env(cls) -> MinioSettings:
-        # Containers set MINIO_ENDPOINT (http://minio:9000); on the host it is
-        # derived from the published port so there is no second literal.
+        # Containers set MINIO_ENDPOINT; on the host it derives from the port.
         endpoint = os.environ.get("MINIO_ENDPOINT") or f"http://127.0.0.1:{_env('MINIO_API_PORT')}"
         return cls(
             endpoint=endpoint,

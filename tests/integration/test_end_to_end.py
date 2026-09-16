@@ -1,9 +1,5 @@
-"""End-to-end: MinIO -> Airflow -> Postgres -> Metabase.
-
-Row counts are asserted against the generator's manifest, which is computed
-from deliberate corruption rather than from the transform's own output, so a
-broken transform cannot make these tests pass.
-"""
+"""End-to-end: MinIO -> Airflow -> Postgres -> Metabase. Counts are asserted
+against the generator manifest, not the transform's own output."""
 
 from __future__ import annotations
 
@@ -26,8 +22,7 @@ ROWS, SEED, CORRUPT, DUPLICATES = 600, 21, 48, 32
 @pytest.fixture
 def uploaded_batch(batch_id, cfg, conn, tmp_path: Path):
     """Generate a batch, upload it, and clean up both stores afterwards."""
-    # A cold stack has no warehouse tables until the first DAG run; teardown
-    # must not depend on a test having created them.
+    # A cold stack has no tables yet; teardown must not assume them.
     warehouse.ensure_schema(conn, cfg)
 
     df, manifest = generate(ROWS, SEED, CORRUPT, DUPLICATES, cfg)
@@ -237,8 +232,7 @@ def test_each_run_is_recorded_for_audit(uploaded_batch, airflow, conn, cfg, batc
 
 
 def test_a_failed_batch_is_not_rediscovered(airflow, conn, cfg, tmp_path, batch_id):
-    """The poison pill: discovery keyed on the fact table meant a batch that
-    failed the quality gate was re-attempted on every later run, forever."""
+    """Poison pill: a gate-failed batch must not be re-attempted forever."""
     from data_generator.generate import generate as _gen
 
     bad, _ = _gen(400, 5, 360, 0, cfg)  # 90% corrupt — well past max_reject_ratio
@@ -274,8 +268,7 @@ def test_a_failed_batch_is_not_rediscovered(airflow, conn, cfg, tmp_path, batch_
 
 
 def test_verify_batch_catches_corrupted_rows(uploaded_batch, airflow, conn, cfg, batch_id):
-    """Post-load verification must fail on data that was tampered with after
-    the load; checking only before the write would miss a loader bug."""
+    """Verification must catch data tampered with after the load."""
     airflow.unpause(DAG_ID)
     airflow.run_to_completion(DAG_ID, {"batch_id": batch_id})
 

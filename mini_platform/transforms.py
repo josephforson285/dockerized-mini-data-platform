@@ -1,8 +1,5 @@
-"""Pure transforms: DataFrame in, DataFrames out. No Airflow, no I/O, no env —
-so the whole cleaning contract is unit-testable without a running stack.
-
-Thresholds and column roles come from config/pipeline.yml, not from literals.
-"""
+"""Pure transforms: DataFrame in, DataFrames out. No Airflow, no I/O, so the
+cleaning contract is testable without a stack. Thresholds come from config."""
 
 from __future__ import annotations
 
@@ -21,11 +18,8 @@ class QualityGateFailed(RuntimeError):
 def assert_quality(
     clean: pd.DataFrame, rejects: pd.DataFrame, cfg: PipelineConfig | None = None
 ) -> float:
-    """Raise when the reject ratio exceeds the configured limit.
-
-    Quarantining a few bad rows is normal. A batch that is mostly unusable is an
-    upstream incident: loading it would publish a misleading partial dataset.
-    """
+    """Raise above the configured reject ratio: a mostly-bad batch is an
+    upstream incident, not rows to quarantine."""
     cfg = cfg or get()
     total = len(clean) + len(rejects)
     if total == 0:
@@ -49,7 +43,7 @@ def normalise(df: pd.DataFrame, cfg: PipelineConfig | None = None) -> pd.DataFra
 
     for col in cfg.contract.text_columns:
         out[col] = out[col].astype("string").str.strip()
-        # Empty strings are nulls; upstream CSVs express them both ways.
+        # Upstream CSVs express null both ways.
         out[col] = out[col].replace("", pd.NA)
 
     for col in cfg.rules.uppercase_columns:
@@ -90,10 +84,7 @@ def clean(
     ingested_at: dt.datetime | None = None,
     cfg: PipelineConfig | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Split a raw frame into (clean, rejects).
-
-    Rejects are returned rather than dropped so bad rows stay auditable.
-    """
+    """Split into (clean, rejects); rejects are kept auditable, not dropped."""
     cfg = cfg or get()
     ingested_at = ingested_at or dt.datetime.now(dt.UTC)
 

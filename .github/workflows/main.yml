@@ -7,7 +7,7 @@ on:
   pull_request:
   workflow_dispatch:
 
-# A newer push makes an in-flight run irrelevant; don't queue integration jobs.
+# A newer push makes an in-flight run irrelevant.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -16,7 +16,7 @@ env:
   PYTHON_VERSION: "3.13"
 
 jobs:
-  # Fast tier: everything that needs no running services. Target under 90s.
+  # Fast tier: no services needed, under 90s.
   lint:
     name: lint
     runs-on: ubuntu-latest
@@ -38,9 +38,7 @@ jobs:
           cp .env.example .env
           ./scripts/gen_secrets.sh
 
-      # Exactly the target developers run. hadolint is not on the runner and
-      # the linters are containerised anyway, so parity costs only two small
-      # image pulls and removes any chance of CI and local drifting.
+      # The same target developers run, so CI and local cannot drift.
       - name: make lint
         run: make lint PY="python"
 
@@ -80,7 +78,7 @@ jobs:
           docker run --rm --entrypoint python airflow-test:ci \
             -m pytest /opt/airflow/tests/test_dag_integrity.py -q
 
-  # Integration tier: the real stack, exercised end to end.
+  # Integration tier: the real stack.
   integration:
     name: end-to-end
     runs-on: ubuntu-latest
@@ -147,7 +145,7 @@ jobs:
         if: always()
         run: docker compose down -v
 
-  # Deployment step 1: publish the immutable artifact.
+  # Publish the immutable artifact.
   publish:
     name: publish image
     runs-on: ubuntu-latest
@@ -161,8 +159,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The runner's default buildx driver is plain "docker", which cannot
-      # export a cache; type=gha needs the container driver this sets up.
+      # type=gha cache needs the container driver, not the default.
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -177,8 +174,7 @@ jobs:
           repo=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           echo "image=ghcr.io/${repo}/airflow:sha-${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
-      # Tagged by commit sha, never latest: a mutable tag is how CI goes green
-      # while the environment keeps running older code.
+      # Tagged by sha, never latest: a mutable tag hides what is deployed.
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -190,9 +186,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Deployment step 2: deploy that exact published image into a designated
-  # test environment and prove data still flows through it. Nothing is rebuilt
-  # here — this exercises the artifact that would ship.
+  # Deploy that exact image and prove data still flows. Nothing is rebuilt.
   deploy-test:
     name: deploy to test environment
     runs-on: ubuntu-latest
@@ -231,7 +225,7 @@ jobs:
           PUBLISHED_IMAGE: ${{ needs.publish.outputs.image }}
         run: |
           docker pull "$PUBLISHED_IMAGE"
-          # Point compose at the published artifact instead of a local build.
+          # Point compose at the published artifact.
           AIRFLOW_IMAGE="${PUBLISHED_IMAGE%:*}" IMAGE_TAG="${PUBLISHED_IMAGE##*:}" \
             docker compose up -d --no-build --wait --wait-timeout 600 \
               postgres minio airflow-apiserver airflow-scheduler airflow-dag-processor metabase

@@ -1,8 +1,5 @@
-"""Sales ingestion: MinIO -> clean -> Postgres.
-
-The DAG is deliberately thin. All cleaning logic lives in mini_platform, which
-is unit-tested without Airflow; these tasks only move data between systems.
-"""
+"""Sales ingestion: MinIO -> clean -> Postgres. Thin by design; logic lives in
+mini_platform, which is tested without Airflow."""
 
 from __future__ import annotations
 
@@ -31,10 +28,7 @@ def _batch_id(key: str) -> str:
     start_date=dt.datetime(2026, 1, 1),
     catchup=False,
     max_active_runs=1,
-    # The load is idempotent, so retrying a half-finished task is safe. Retries
-    # exist for transient faults — a restarting database, a network blip — and
-    # a flat 10s expires long before one of those clears. Backoff also spreads
-    # mapped task instances out instead of retrying in lockstep.
+    # Transient faults only; backoff spans an outage and breaks lockstep.
     default_args={
         "retries": 3,
         "retry_delay": dt.timedelta(seconds=30),
@@ -59,12 +53,7 @@ def _batch_id(key: str) -> str:
 def sales_pipeline():
     @task(doc_md="Lists CSVs in MinIO and subtracts batches already in the warehouse.")
     def discover(params: dict) -> list[str]:
-        """New files in MinIO, minus every batch already attempted.
-
-        Based on the run ledger rather than a sensor's memory, so a wiped
-        scheduler still behaves — and a batch that failed the quality gate is
-        not retried forever on every future run.
-        """
+        """New files in MinIO, minus every batch the ledger has attempted."""
         load_env()
         cfg = get()
         keys = [k for k in storage.list_keys(cfg.raw_prefix) if k.endswith(".csv")]
@@ -97,13 +86,11 @@ def sales_pipeline():
         raw = storage.read_csv(key)
         good, bad = clean(raw, batch_id=batch_id, cfg=cfg)
 
-        # Fail before writing: a mostly-bad batch is an upstream incident, and
-        # loading it would publish a misleading partial dataset.
+        # Fail before writing: a partial load looks like success.
         try:
             reject_ratio = assert_quality(good, bad, cfg)
         except QualityGateFailed as exc:
-            # Record the attempt, then fail without retrying: the same file will
-            # fail the same way, so two more runs only waste time.
+            # Record, then fail without retrying: it fails the same way.
             with psycopg.connect(PostgresSettings.from_env().dsn) as conn:
                 warehouse.ensure_schema(conn, cfg)
                 warehouse.record_run(
@@ -137,11 +124,7 @@ def sales_pipeline():
 
     @task(doc_md="Re-checks what actually landed in the fact table, after the load.")
     def verify_load(results: list[dict]) -> dict:
-        """Assert post-conditions against the table, not the DataFrame.
-
-        assert_quality guards the data on its way in; this guards against a bug
-        in the load itself, which nothing else would catch.
-        """
+        """Check the table, not the frame — catches a bug in the load itself."""
         load_env()
         cfg = get()
         problems = []
@@ -153,7 +136,7 @@ def sales_pipeline():
                     problems.append(f"{r['batch_id']}: {'; '.join(outcome['failures'])}")
 
         if problems:
-            # The data is already written, so this is a real defect, not a retry.
+            # Already written: a defect, not something a retry fixes.
             raise AirflowFailException("post-load verification failed — " + " | ".join(problems))
         return {"batches_verified": len(results)}
 
@@ -168,8 +151,7 @@ def sales_pipeline():
         log.info("run summary: %s", total)
         return total
 
-    # verify_load gates the run without relaying the payload: returning the
-    # mapped results proxy is not XCom-serialisable.
+    # Gates without relaying the payload: the mapped proxy is not serialisable.
     ingested = ingest.expand(key=discover())
     verify_load(ingested) >> summarise(ingested)
 

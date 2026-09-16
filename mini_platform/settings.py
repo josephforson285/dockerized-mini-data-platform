@@ -1,5 +1,4 @@
-"""Loads config/pipeline.yml once. Business rules come from here; hosts,
-ports and credentials come from the environment."""
+"""Business rules from config/pipeline.yml. Hosts and credentials from env."""
 
 from __future__ import annotations
 
@@ -126,7 +125,7 @@ def load(path: str | Path | None = None) -> PipelineConfig:
 
 
 def _validate(cfg: PipelineConfig) -> None:
-    """Catch a broken config at load time rather than mid-DAG."""
+    """Fail at load, not mid-DAG."""
     unknown = set(cfg.contract.required_columns) - set(cfg.contract.raw_columns)
     if unknown:
         raise ConfigError(f"required_columns not in raw_columns: {sorted(unknown)}")

@@ -1,13 +1,5 @@
-"""Synthetic sales batches.
-
-Deterministic for a given seed, and every corrupted row is corrupted on
-purpose. The manifest records how many rows *should* survive cleaning, so the
-end-to-end test asserts against known numbers instead of against the
-transform's own output.
-
-Vocabularies and defaults come from config/pipeline.yml, so the generator and
-the validator can never disagree about what a valid currency is.
-"""
+"""Synthetic sales batches, deterministic per seed. Rows are corrupted on
+purpose; the manifest says how many should survive."""
 
 from __future__ import annotations
 
@@ -69,8 +61,7 @@ def generate(
     step = dt.timedelta(minutes=cfg.generator.interval_minutes)
     records = [_row(fake, rnd, start + step * i, cfg) for i in range(rows)]
 
-    # Corrupt the first block, duplicate from the untouched tail, so the two
-    # never overlap and the expected counts stay exact.
+    # Corrupt the head, duplicate from the tail: no overlap, exact counts.
     breakdown: dict[str, int] = {}
     for i in range(corrupt):
         field, make = CORRUPTIONS[i % len(CORRUPTIONS)]
