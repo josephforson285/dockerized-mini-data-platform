@@ -53,7 +53,7 @@ def _batch_id(key: str) -> str:
     },
 )
 def sales_pipeline():
-    @task
+    @task(doc_md="Lists CSVs in MinIO and subtracts batches already in the warehouse.")
     def discover(params: dict) -> list[str]:
         """New files in MinIO, minus what the warehouse already holds.
 
@@ -79,7 +79,11 @@ def sales_pipeline():
         log.info("discovered %d batch(es): %s", len(keys), keys)
         return keys
 
-    @task(max_active_tis_per_dag=2)
+    @task(
+        max_active_tis_per_dag=2,
+        doc_md="Reads one batch, cleans it, checks the reject ratio, then loads "
+        "clean rows and quarantines the rest.",
+    )
     def ingest(key: str) -> dict:
         load_env()
         cfg = get()
@@ -126,7 +130,29 @@ def sales_pipeline():
             "reject_ratio": round(reject_ratio, 4),
         }
 
-    @task
+    @task(doc_md="Re-checks what actually landed in the fact table, after the load.")
+    def verify_load(results: list[dict]) -> dict:
+        """Assert post-conditions against the table, not the DataFrame.
+
+        assert_quality guards the data on its way in; this guards against a bug
+        in the load itself, which nothing else would catch.
+        """
+        load_env()
+        cfg = get()
+        problems = []
+        with psycopg.connect(PostgresSettings.from_env().dsn) as conn:
+            for r in results:
+                outcome = warehouse.verify_batch(r["batch_id"], conn, cfg)
+                log.info("%s: %d rows verified", r["batch_id"], outcome["rows"])
+                if outcome["failures"]:
+                    problems.append(f"{r['batch_id']}: {'; '.join(outcome['failures'])}")
+
+        if problems:
+            # The data is already written, so this is a real defect, not a retry.
+            raise AirflowFailException("post-load verification failed — " + " | ".join(problems))
+        return {"batches_verified": len(results)}
+
+    @task(doc_md="Totals across every batch processed in this run.")
     def summarise(results: list[dict]) -> dict:
         total = {
             "batches": len(results),
@@ -137,7 +163,10 @@ def sales_pipeline():
         log.info("run summary: %s", total)
         return total
 
-    summarise(ingest.expand(key=discover()))
+    # verify_load gates the run without relaying the payload: returning the
+    # mapped results proxy is not XCom-serialisable.
+    ingested = ingest.expand(key=discover())
+    verify_load(ingested) >> summarise(ingested)
 
 
 sales_pipeline()
