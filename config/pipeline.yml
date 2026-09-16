@@ -1,9 +1,6 @@
 ---
-# Business rules and the data contract. Environment-independent: dev, CI and
-# prod all read this file unchanged. Anything that differs per environment
-# (hosts, ports, credentials) belongs in .env, not here.
-#
-# Override the path with MINI_PLATFORM_CONFIG.
+# Business rules and the data contract, identical in every environment.
+# Hosts, ports and credentials belong in .env. Override with MINI_PLATFORM_CONFIG.
 
 contract:
   raw_columns:
@@ -17,7 +14,7 @@ contract:
     - currency
     - country
     - payment_method
-  # Null in any of these makes a row unusable.
+  # Null here makes a row unusable.
   required_columns:
     - order_id
     - order_ts
@@ -43,8 +40,7 @@ rules:
   min_quantity: 1
   min_unit_price: 0.01
   revenue_precision: 2
-  # A batch this bad is an upstream incident, not rows to quarantine; the run
-  # fails instead of loading it.
+  # Past this, the run fails rather than loading a partial dataset.
   max_reject_ratio: 0.5
   dedupe_key: order_id
   uppercase_columns: [currency, country]
@@ -57,10 +53,8 @@ warehouse:
   fact_table: fact_sales
   reject_table: rejected_sales
   run_table: pipeline_runs
-  # Quarantined rows are for diagnosis, not permanent storage; without a window
-  # rejected_sales grows without bound. pipeline_runs is never pruned — it is
-  # the ledger discovery reads, and deleting from it would re-attempt old
-  # batches.
+  # Rejects are for diagnosis, not storage. pipeline_runs is never pruned:
+  # discovery reads it.
   reject_retention_days: 90
 
 generator:

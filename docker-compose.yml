@@ -1,18 +1,13 @@
 ---
 name: mini-data-platform
 
-# Images are pinned. MinIO is pulled from quay.io — Docker Hub's minio/minio
-# no longer serves pulls — and held at the last release whose community
-# console can still browse objects.
 x-healthcheck-defaults: &healthcheck-defaults
   interval: 5s
   timeout: 5s
   retries: 12
 
-# `airflow jobs check` boots a Python interpreter, imports Airflow and queries
-# Postgres — measured at ~5s on an idle 12-core host. A 5s timeout passes there
-# by luck and fails on a smaller CI runner, so these checks get their own,
-# far more generous budget.
+# `airflow jobs check` takes ~5s; a 5s timeout passes locally by luck and
+# fails on a CI runner.
 x-airflow-healthcheck: &airflow-healthcheck
   interval: 15s
   timeout: 30s
@@ -25,19 +20,16 @@ x-airflow-common: &airflow-common
     dockerfile: docker/airflow/Dockerfile
   image: ${AIRFLOW_IMAGE:-mini-data-platform/airflow}:${IMAGE_TAG:-local}
   restart: unless-stopped
-  # Must stay 50000: Python skips site-packages it does not own, so a foreign
-  # uid makes `import airflow` fail outright.
+  # Must stay 50000: Python skips site-packages it does not own.
   user: "${AIRFLOW_UID}:0"
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?}
     AIRFLOW__API__SECRET_KEY: ${AIRFLOW_SECRET_KEY:?}
-    # Airflow 3 workers call back to the API server; the default points at
-    # localhost, which is empty inside the scheduler container.
+    # Airflow 3 workers call back here; the default localhost is empty.
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
-    # Workers sign their execution-API calls with this; the API server verifies
-    # with the same value, so it must be identical across every service.
+    # Must be identical across services or tasks fail "Invalid auth token".
     AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_SECRET_KEY:?}
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: >-
       postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${AIRFLOW_DB}
@@ -46,7 +38,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/auth/passwords.json
     AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:?}
     AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?}
-    # Consumed by mini_platform, which talks to services by name inside the network.
+    # Consumed by mini_platform, over the internal network.
     POSTGRES_HOST: postgres
     POSTGRES_USER: ${POSTGRES_USER:?}
     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
@@ -86,11 +78,12 @@ services:
       - "${POSTGRES_PORT}:5432"
     networks: [platform]
     healthcheck:
-      # $$ escapes compose interpolation so the shell expands it in-container.
+      # $$ defers expansion to the container shell.
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       start_period: 10s
       <<: *healthcheck-defaults
 
+  # quay.io, not Docker Hub, which no longer serves this image.
   minio:
     image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
     restart: unless-stopped
@@ -109,8 +102,7 @@ services:
       start_period: 5s
       <<: *healthcheck-defaults
 
-  # One-shot: creates the raw bucket, then exits. Downstream services wait on
-  # service_completed_successfully so the bucket is guaranteed to exist.
+  # One-shot; downstream waits on service_completed_successfully.
   minio-init:
     image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
     restart: "no"
@@ -176,8 +168,7 @@ services:
       test: ["CMD-SHELL", "airflow jobs check --job-type DagProcessorJob --local || exit 1"]
       <<: *airflow-healthcheck
 
-  # Metabase keeps its own state in Postgres. The default embedded H2 database
-  # is lost whenever the container is recreated, taking dashboards with it.
+  # State in Postgres: the default embedded H2 is lost on recreate.
   metabase:
     image: metabase/metabase:v0.63.17.2
     restart: unless-stopped
@@ -190,8 +181,7 @@ services:
       MB_DB_PASS: ${POSTGRES_PASSWORD:?}
       MB_SITE_NAME: ${METABASE_SITE_NAME:-Mini Data Platform}
       MB_ANON_TRACKING_ENABLED: "false"
-      # Metabase recreates its demo database and example dashboards on every
-      # boot; deleting them afterwards is whack-a-mole.
+      # Metabase recreates demo content on every boot.
       MB_LOAD_SAMPLE_CONTENT: "false"
     ports:
       - "${METABASE_PORT}:3000"
@@ -201,15 +191,14 @@ services:
     networks: [platform]
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/health || exit 1"]
-      # Migrations on first boot take a while; fail slow rather than flap.
+      # First-boot migrations are slow; fail slow rather than flap.
       start_period: 120s
       interval: 10s
       timeout: 5s
       retries: 24
 
 networks:
-  # Explicit bridge rather than the implicit default: Airflow reaches MinIO and
-  # Postgres by service name on this network.
+  # Explicit bridge; services resolve each other by name.
   platform:
     driver: bridge
 

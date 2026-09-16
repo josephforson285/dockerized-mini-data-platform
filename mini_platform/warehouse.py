@@ -1,9 +1,5 @@
-"""Postgres load.
-
-Idempotent by construction: rows land in a temp staging table, the batch's
-previous attempt is deleted, then the merge upserts on the natural key. Airflow
-retries and manual replays therefore cannot double-count.
-"""
+"""Postgres load. Staging table, delete-by-batch, upsert — so retries and
+replays cannot double-count."""
 
 from __future__ import annotations
 
@@ -65,10 +61,8 @@ def _ident(name: str) -> sql.Identifier:
     return sql.Identifier(name)
 
 
-# Columns added after the first release. ALTER TABLE takes an AccessExclusiveLock
-# even when the column already exists, and ensure_schema runs on every task, so
-# the catalog is checked first — otherwise concurrent tasks deadlock against a
-# DELETE on another table.
+# ALTER locks exclusively even as a no-op, and ensure_schema runs per task —
+# so the catalog is checked first, or concurrent tasks deadlock.
 _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     ("run_table", "status", "text NOT NULL DEFAULT 'success'"),
     ("run_table", "detail", "text"),
@@ -120,7 +114,7 @@ def ensure_schema(conn: psycopg.Connection, cfg: PipelineConfig | None = None) -
 
 
 def _rows(df: pd.DataFrame) -> list[tuple]:
-    """pandas NA variants are not adaptable by psycopg; normalise to None."""
+    """psycopg cannot adapt pandas NA; normalise to None."""
     frame = df.astype(object)
     frame = frame.where(pd.notna(frame), None)
     return list(frame.itertuples(index=False, name=None))
@@ -132,7 +126,7 @@ def load_clean(
     conn: psycopg.Connection,
     cfg: PipelineConfig | None = None,
 ) -> int:
-    """Replace this batch's rows, upserting on the natural key. Returns rows written."""
+    """Replace this batch's rows, upserting on the natural key."""
     cfg = cfg or get()
     columns = list(cfg.contract.clean_columns)
     col_ids = sql.SQL(", ").join(_ident(c) for c in columns)
@@ -151,8 +145,7 @@ def load_clean(
             for row in _rows(df.loc[:, columns]):
                 cp.write_row(row)
 
-        # Clear the prior attempt before merging, so a shrinking batch does not
-        # leave orphaned rows behind.
+        # Clear the prior attempt, or a shrinking batch leaves orphans.
         cur.execute(
             sql.SQL("DELETE FROM {fact} WHERE batch_id = %s").format(fact=_ident(cfg.fact_table)),
             (batch_id,),
@@ -174,7 +167,7 @@ def load_rejects(
     conn: psycopg.Connection,
     cfg: PipelineConfig | None = None,
 ) -> int:
-    """Quarantine bad rows as jsonb so a changing raw schema cannot break the load."""
+    """Quarantine bad rows as jsonb: a changing raw schema cannot break the load."""
     cfg = cfg or get()
     if df.empty:
         _delete_batch(conn, cfg.reject_table, batch_id)
@@ -212,13 +205,8 @@ def _delete_batch(conn: psycopg.Connection, table: str, batch_id: str) -> None:
 
 
 def attempted_batches(conn: psycopg.Connection, cfg: PipelineConfig | None = None) -> set[str]:
-    """Every batch already processed, whether it loaded or was rejected.
-
-    Discovery must not key on the fact table: a batch that failed the quality
-    gate never lands there, so it would be rediscovered and re-failed on every
-    subsequent run — one bad file permanently reddening a scheduled pipeline.
-    The run ledger records attempts, which is the question being asked.
-    """
+    """Batches already processed. Keying on the fact table instead would
+    re-attempt a gate-failed batch forever."""
     cfg = cfg or get()
     with conn.cursor() as cur:
         cur.execute(sql.SQL("SELECT DISTINCT batch_id FROM {t}").format(t=_ident(cfg.run_table)))
@@ -236,9 +224,7 @@ def record_run(
     status: str = "success",
     detail: str | None = None,
 ) -> None:
-    """One row per attempt, so a run stays reviewable after its Airflow logs age
-    out. Failures are recorded too: a table that only holds successes cannot
-    answer what happened to a batch that never landed."""
+    """One row per attempt, failures included — Airflow logs age out."""
     cfg = cfg or get()
     with conn.cursor() as cur:
         cur.execute(
@@ -261,11 +247,7 @@ def verify_batch(
     conn: psycopg.Connection,
     cfg: PipelineConfig | None = None,
 ) -> dict:
-    """Post-load assertions, run against what actually landed.
-
-    assert_quality checks the frame before writing; this checks the table after,
-    so a bug in the load itself cannot pass unnoticed.
-    """
+    """Assert what actually landed; assert_quality only sees the frame."""
     cfg = cfg or get()
     with conn.cursor() as cur:
         cur.execute(
@@ -312,12 +294,8 @@ def prune_rejects(
     cfg: PipelineConfig | None = None,
     retention_days: int | None = None,
 ) -> int:
-    """Delete quarantined rows past the retention window. Returns rows removed.
-
-    Only rejected_sales is pruned. pipeline_runs is the ledger discovery reads,
-    so deleting from it would make old batches look unprocessed and re-attempt
-    them; fact_sales is the product.
-    """
+    """Delete quarantined rows past the window. Never the ledger: pruning it
+    would re-attempt old batches."""
     cfg = cfg or get()
     days = cfg.reject_retention_days if retention_days is None else retention_days
     with conn.cursor() as cur:

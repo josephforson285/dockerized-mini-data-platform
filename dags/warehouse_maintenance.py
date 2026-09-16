@@ -1,8 +1,4 @@
-"""Housekeeping, kept apart from ingestion.
-
-Maintenance runs on its own cadence and must not fail the pipeline that loads
-data, so it is a separate DAG rather than a task on sales_pipeline.
-"""
+"""Housekeeping on its own cadence; must not fail the ingestion pipeline."""
 
 from __future__ import annotations
 

@@ -1,8 +1,7 @@
 # Mini Data Platform
 
-A Dockerised data platform with an automated CI/CD pipeline: synthetic sales
-data lands in object storage, Airflow cleans and loads it into Postgres, and
-Metabase serves it. Every hop is verified end to end by GitHub Actions.
+Synthetic sales data lands in object storage, Airflow cleans and loads it into
+Postgres, Metabase serves it. Every hop is verified by GitHub Actions.
 
 ```mermaid
 flowchart LR
@@ -23,9 +22,8 @@ make up                        # build, start, wait healthy, provision Metabase
 make seed                      # generate a batch and upload it to MinIO
 ```
 
-Then unpause `sales_pipeline` in the Airflow UI, or run `make e2e` to drive the
-whole flow and assert the result. The **Sales Overview** dashboard is already
-built in Metabase and populates as soon as data lands.
+Unpause `sales_pipeline` in the Airflow UI, or run `make e2e`. The **Sales
+Overview** dashboard is already built and populates as data lands.
 
 | Service | URL | Credentials |
 | :-- | :-- | :-- |
@@ -34,8 +32,8 @@ built in Metabase and populates as soon as data lands.
 | Metabase | http://localhost:3001 | `METABASE_ADMIN_EMAIL` / `METABASE_ADMIN_PASSWORD` |
 | Postgres | localhost:5435 | `POSTGRES_USER` / `POSTGRES_PASSWORD` |
 
-Ports avoid a host Postgres on 5432 and MySQL on 3306. All values live in
-`.env`, which `make secrets` fills with random credentials.
+Ports avoid a host Postgres on 5432 and MySQL on 3306. Values live in `.env`,
+filled by `make secrets`.
 
 ## Make targets
 
@@ -72,9 +70,8 @@ past `reject_retention_days`.
 
 ## Dashboard
 
-`make up` provisions a **Sales Overview** dashboard from
-[`config/dashboard.yml`](config/dashboard.yml) through the Metabase API — it is
-never clicked together by hand, so it rebuilds identically on any machine.
+`make up` builds **Sales Overview** from [`config/dashboard.yml`](config/dashboard.yml)
+through the Metabase API, so it rebuilds identically on any machine.
 
 | KPIs | Trends and breakdowns |
 | :-- | :-- |
@@ -84,85 +81,44 @@ never clicked together by hand, so it rebuilds identically on any machine.
 | Rows quarantined | Orders by payment method |
 | | Rejected rows by reason |
 
-Quarantined rows sit on the dashboard deliberately: ingestion quality is a KPI,
-not something to hide in a log.
+Quarantined rows are on the dashboard deliberately: ingestion quality is a KPI.
 
 ## Design notes
 
-**The load is idempotent.** Airflow retries, and replays happen. Rows go to a
-staging table, the batch is cleared, then merged on the natural key, so running
-the same batch twice leaves the row count unchanged. The end-to-end suite
-asserts this explicitly.
-
-**Business logic lives outside Airflow.** `mini_platform` is plain Python with
-no Airflow imports, so the cleaning contract is unit-tested in under a second
-with no containers. The DAG only moves data between systems.
-
-**Rules are configuration, not code.** `config/pipeline.yml` holds the data
-contract, thresholds and vocabularies; `.env` holds hosts, ports and
-credentials. Currencies were once declared in two modules, which meant the
-generator could emit rows its own validator rejected — there is now a
-regression test pinning that.
-
-**Tests assert against the manifest.** Expected row counts come from the
-generator's deliberate corruption, not from the transform's own output, so a
-broken transform cannot make the suite pass. Verified by disabling
-de-duplication: 5 of 7 end-to-end tests failed.
-
-**Discovery uses the run ledger, not the fact table.** `pipeline_runs` records
-every attempt, success or failure. Keying discovery on `fact_sales` instead
-looks correct until a batch fails the quality gate: it never lands there, so it
-is rediscovered and re-failed on every subsequent run — one bad file
-permanently reddening a scheduled pipeline. Because only outcomes the pipeline
-understands reach the ledger, a transient crash leaves no row and is correctly
-retried next run.
-
-**Checks run on both sides of the write.** `assert_quality` guards the frame on
-the way in; `verify_load` re-queries the fact table afterwards for nulls,
-thresholds, revenue arithmetic and duplicate keys. Without the second, a bug in
-the loader itself would pass unnoticed.
-
-**Retries are for transient faults only.** A quality-gate or verification
-failure raises `AirflowFailException`, which Airflow does not retry — the same
-file fails the same way. Everything else gets three attempts with exponential
-backoff from 30s, which spans a service restart; a flat short delay expires
-inside the outage and buys nothing.
-
-**Nothing is configured by hand.** Airflow's admin password comes from `.env`,
-and Metabase's admin plus its database registration are created through the
-setup API by `scripts/provision_metabase.py`. There is no setup wizard to click,
-which is what lets CI verify the final hop.
+| Decision | Why |
+| :-- | :-- |
+| Staging table, delete-by-batch, upsert | Airflow retries; a re-run must not double-count |
+| Logic outside Airflow | `mini_platform` imports no Airflow, so 39 unit tests run in 0.5s with no containers |
+| Rules in `config/pipeline.yml` | currencies were once declared twice, so the generator could emit rows its own validator rejected |
+| Tests assert against the generator manifest | comparing a transform to its own output always passes; disabling de-duplication failed 5 of 7 e2e tests |
+| Discovery keys on `pipeline_runs`, not `fact_sales` | a gate-failed batch never lands, so it would be re-attempted forever |
+| Checks on both sides of the write | `assert_quality` guards the frame, `verify_load` re-queries the table |
+| Non-retryable deterministic failures | a bad file fails identically every time; retries are for transient faults |
+| Provisioned via APIs, never clicked | a hand-made dashboard cannot be verified by CI |
 
 ## CI/CD
 
 `.github/workflows/main.yml` runs two tiers:
 
-- **Fast tier** — `lint`, `unit` and `dags` in parallel, no services required.
-- **Integration tier** — gated behind them; builds the platform, provisions
-  Metabase, runs the end-to-end suite, uploads compose logs as an artifact on
-  failure, and always tears down.
-- **Publish** — on `main`, pushes the runtime image to GHCR tagged
-  `sha-<commit>`. Never `latest`: a mutable tag is how CI goes green while the
-  environment keeps running older code.
-- **Deploy to test** — pulls that exact published image and runs the stack with
-  `--no-build`, then smoke-tests the data flow through it. Nothing is rebuilt,
-  so what is verified is the artifact that would ship.
+| Job | Does |
+| :-- | :-- |
+| `lint` `unit` `dags` | fast tier, parallel, no services, under 90s |
+| `end-to-end` | builds the platform, provisions Metabase, runs the integration suite |
+| `publish image` | pushes to GHCR tagged `sha-<commit>`, never `latest` |
+| `deploy to test environment` | pulls that exact image, `--no-build`, smoke-tests it |
 
-CI calls the same `make` targets you do, so the runbook and the pipeline cannot
-drift. No repository secrets are needed; GHCR uses the built-in `GITHUB_TOKEN`.
+`main` is protected: no direct pushes, the four checks must pass, and auto-merge
+lands a PR the moment they do. CI runs the same `make` targets you do, so the
+runbook cannot drift. No repository secrets — GHCR uses `GITHUB_TOKEN`.
 
-**Notifications.** GitHub already emails the committer on a failed run, so no
-webhook is wired up — a second channel would be noise. What the pipeline adds is
-making that email actionable: a failed end-to-end run writes a table of
-per-service state into the run summary and attaches the compose logs as an
-artifact, and a deploy records which image reference it verified.
+A failed run writes per-service state into the run summary and uploads compose
+logs; GitHub's own email is the notification.
 
 ### Promoting to production
 
 `deploy-test` deploys to an ephemeral environment on the runner. Promoting the
-same digest to a long-lived host would be one further job gated behind a GitHub
-Environment with required reviewers. That is not wired up: there is no server
-behind this lab, and a fake deploy would be worse than an honest gap.
+same digest to a long-lived host is one further gated job — not wired up, since
+there is no server behind this lab and a fake deploy would be worse.
 
 ## Gotchas worth knowing
 
@@ -177,9 +133,9 @@ behind this lab, and a fake deploy would be worse than an honest gap.
 | A bad file fails every run forever | discovery must key on `pipeline_runs`, not `fact_sales` |
 | `password authentication failed for user "platform"` | volumes from an earlier run survived a new `make secrets`. Postgres only applies credentials to an empty data dir, so it kept the old ones. Restore the matching `.env`, or `make nuke && make secrets` to discard the data |
 
-The host exports ROS2's Python 3.12 paths on `PYTHONPATH`, which leak into a
-3.14 venv. Every Python call in the Makefile strips it; never invoke
-`.venv/bin/python` directly.
+This host exports ROS2's Python 3.12 paths on `PYTHONPATH`, which leak into a
+3.14 venv. The Makefile strips it per call; never invoke `.venv/bin/python`
+directly.
 
 ## Contributing
 

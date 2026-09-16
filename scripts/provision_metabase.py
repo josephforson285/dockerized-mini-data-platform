@@ -1,12 +1,5 @@
-"""Provision Metabase headlessly.
-
-Creates the admin account and registers the analytics database through the
-setup API, so a fresh stack comes up fully configured and CI can verify the
-last hop of the pipeline. No setup wizard, no clicking.
-
-Idempotent: on an already-provisioned instance it logs in and only adds the
-database if it is missing.
-"""
+"""Provision Metabase through its setup API — no wizard, so CI can verify the
+last hop. Idempotent: reconciles an existing instance."""
 
 from __future__ import annotations
 
@@ -24,8 +17,7 @@ from mini_platform.settings import REPO_ROOT, get
 TIMEOUT = 30
 DB_DISPLAY_NAME = "Analytics"
 DASHBOARD_CONFIG = REPO_ROOT / "config" / "dashboard.yml"
-# Stamped on every card this script owns, so cards dropped from the config can
-# be archived without touching questions a user created by hand.
+# Marks cards this script owns, so hand-made questions are left alone.
 MANAGED_MARKER = "Managed by config/dashboard.yml — edits will be overwritten."
 
 
@@ -138,8 +130,7 @@ def _headers(session: str) -> dict[str, str]:
 
 
 def remove_bundled_examples(base: str, session: str) -> None:
-    """Metabase ships a demo database plus an Examples collection of dashboards.
-    Remove both, so the instance shows only this platform's data."""
+    """Remove the bundled demo database and Examples collection."""
     for db in _databases(base, session):
         if db.get("is_sample") or db["name"] == "Sample Database":
             requests.delete(
@@ -192,8 +183,7 @@ def _card_payload(db_id: int, card: dict) -> dict:
 
 
 def _upsert_card(base: str, session: str, db_id: int, card: dict, existing: dict[str, int]) -> int:
-    """Update the card with this name if it exists, else create it. Updating in
-    place keeps question history and avoids orphaning a card on every run."""
+    """Upsert by name: keeps history, avoids orphaning a card each run."""
     payload = _card_payload(db_id, card)
     card_id = existing.get(card["name"])
     if card_id is not None:
@@ -214,9 +204,7 @@ def _cards_by_name(base: str, session: str) -> dict[str, int]:
 
 
 def _archive_dropped_cards(base: str, session: str, keep: set[str]) -> None:
-    """Archive managed cards no longer in the config. Without this, deleting a
-    card from dashboard.yml removes it from the dashboard but leaves the
-    question behind."""
+    """Archive managed cards dropped from the config."""
     cards = requests.get(f"{base}/api/card", headers=_headers(session), timeout=TIMEOUT).json()
     for card in cards:
         if card.get("archived") or card["name"] in keep:
@@ -233,12 +221,7 @@ def _archive_dropped_cards(base: str, session: str, keep: set[str]) -> None:
 
 
 def ensure_dashboard(base: str, session: str, db_id: int, cfg) -> int:
-    """Reconcile the dashboard with config/dashboard.yml.
-
-    Edits to the config are applied to an existing dashboard, rather than
-    skipped — otherwise the file stops being the source of truth the moment the
-    dashboard exists.
-    """
+    """Reconcile with config/dashboard.yml, so the file stays the source of truth."""
     spec = _dashboard_spec(cfg)
     name = spec["dashboard"]["name"]
     description = spec["dashboard"].get("description", "")
