@@ -31,11 +31,15 @@ def _batch_id(key: str) -> str:
     start_date=dt.datetime(2026, 1, 1),
     catchup=False,
     max_active_runs=1,
-    # The load is idempotent, so retrying a half-finished task is safe. A hung
-    # task is not: without a timeout it holds a slot until someone notices.
+    # The load is idempotent, so retrying a half-finished task is safe. Retries
+    # exist for transient faults — a restarting database, a network blip — and
+    # a flat 10s expires long before one of those clears. Backoff also spreads
+    # mapped task instances out instead of retrying in lockstep.
     default_args={
-        "retries": 2,
-        "retry_delay": dt.timedelta(seconds=10),
+        "retries": 3,
+        "retry_delay": dt.timedelta(seconds=30),
+        "retry_exponential_backoff": True,
+        "max_retry_delay": dt.timedelta(minutes=5),
         "execution_timeout": dt.timedelta(minutes=20),
     },
     tags=["sales", "minio", "postgres"],
@@ -55,10 +59,11 @@ def _batch_id(key: str) -> str:
 def sales_pipeline():
     @task(doc_md="Lists CSVs in MinIO and subtracts batches already in the warehouse.")
     def discover(params: dict) -> list[str]:
-        """New files in MinIO, minus what the warehouse already holds.
+        """New files in MinIO, minus every batch already attempted.
 
-        Discovery is based on warehouse state rather than a sensor's memory, so
-        a wiped scheduler or a replayed run still does the right thing.
+        Based on the run ledger rather than a sensor's memory, so a wiped
+        scheduler still behaves — and a batch that failed the quality gate is
+        not retried forever on every future run.
         """
         load_env()
         cfg = get()
@@ -73,7 +78,7 @@ def sales_pipeline():
         if not params.get("reload"):
             with psycopg.connect(PostgresSettings.from_env().dsn) as conn:
                 warehouse.ensure_schema(conn, cfg)
-                done = warehouse.loaded_batches(conn, cfg)
+                done = warehouse.attempted_batches(conn, cfg)
             keys = [k for k in keys if _batch_id(k) not in done]
 
         log.info("discovered %d batch(es): %s", len(keys), keys)

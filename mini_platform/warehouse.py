@@ -183,10 +183,17 @@ def _delete_batch(conn: psycopg.Connection, table: str, batch_id: str) -> None:
     conn.commit()
 
 
-def loaded_batches(conn: psycopg.Connection, cfg: PipelineConfig | None = None) -> set[str]:
+def attempted_batches(conn: psycopg.Connection, cfg: PipelineConfig | None = None) -> set[str]:
+    """Every batch already processed, whether it loaded or was rejected.
+
+    Discovery must not key on the fact table: a batch that failed the quality
+    gate never lands there, so it would be rediscovered and re-failed on every
+    subsequent run — one bad file permanently reddening a scheduled pipeline.
+    The run ledger records attempts, which is the question being asked.
+    """
     cfg = cfg or get()
     with conn.cursor() as cur:
-        cur.execute(sql.SQL("SELECT DISTINCT batch_id FROM {t}").format(t=_ident(cfg.fact_table)))
+        cur.execute(sql.SQL("SELECT DISTINCT batch_id FROM {t}").format(t=_ident(cfg.run_table)))
         return {r[0] for r in cur.fetchall()}
 
 
