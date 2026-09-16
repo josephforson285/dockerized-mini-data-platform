@@ -25,12 +25,12 @@ make seed                      # generate a batch and upload it to MinIO
 Unpause `sales_pipeline` in the Airflow UI, or run `make e2e`. The **Sales
 Overview** dashboard is already built and populates as data lands.
 
-| Service | URL | Credentials |
-| :-- | :-- | :-- |
-| Airflow | http://localhost:8082 | `AIRFLOW_ADMIN_USER` / `AIRFLOW_ADMIN_PASSWORD` |
-| MinIO console | http://localhost:9003 | `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` |
-| Metabase | http://localhost:3001 | `METABASE_ADMIN_EMAIL` / `METABASE_ADMIN_PASSWORD` |
-| Postgres | localhost:5435 | `POSTGRES_USER` / `POSTGRES_PASSWORD` |
+| Service | URL |
+| :-- | :-- |
+| Airflow | http://localhost:8082 |
+| MinIO console | http://localhost:9003 |
+| Metabase | http://localhost:3001 |
+| Postgres | localhost:5435 |
 
 Ports avoid a host Postgres on 5432 and MySQL on 3306. Values live in `.env`,
 filled by `make secrets`.
@@ -119,23 +119,6 @@ logs; GitHub's own email is the notification.
 `deploy-test` deploys to an ephemeral environment on the runner. Promoting the
 same digest to a long-lived host is one further gated job — not wired up, since
 there is no server behind this lab and a fake deploy would be worse.
-
-## Gotchas worth knowing
-
-| Symptom | Cause |
-| :-- | :-- |
-| `No module named 'airflow'` | `AIRFLOW_UID` must stay `50000`; Python skips site-packages it does not own |
-| `httpx.ConnectError` in a task | Airflow 3 workers call `core.execution_api_server_url`, which defaults to localhost |
-| `Invalid auth token` | `api_auth.jwt_secret` must be identical across every Airflow service |
-| MinIO image will not pull | Docker Hub no longer serves `minio/minio`; images come from `quay.io` |
-| Code edit has no effect | `mini_platform` is baked into the image — `make up` rebuilds |
-| Metabase rejects a password | its complexity policy needs digits, which `make secrets` guarantees |
-| A bad file fails every run forever | discovery must key on `pipeline_runs`, not `fact_sales` |
-| `password authentication failed for user "platform"` | volumes from an earlier run survived a new `make secrets`. Postgres only applies credentials to an empty data dir, so it kept the old ones. Restore the matching `.env`, or `make nuke && make secrets` to discard the data |
-
-This host exports ROS2's Python 3.12 paths on `PYTHONPATH`, which leak into a
-3.14 venv. The Makefile strips it per call; never invoke `.venv/bin/python`
-directly.
 
 ## Contributing
 
