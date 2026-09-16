@@ -65,6 +65,10 @@ filled by `make secrets`.
 5. `verify_load` re-checks the fact table after the load.
 6. Metabase reads `fact_sales` from the `analytics` database.
 
+![sales_pipeline after a successful run](docs/images/airflow-dag-success.png)
+
+`ingest` is dynamically mapped — one task instance per batch `discover` finds.
+
 A second DAG, `warehouse_maintenance`, runs daily and prunes quarantined rows
 past `reject_retention_days`.
 
@@ -83,6 +87,8 @@ through the Metabase API, so it rebuilds identically on any machine.
 
 Quarantined rows are on the dashboard deliberately: ingestion quality is a KPI.
 
+![Sales Overview dashboard](docs/images/metabase-dashboard.png)
+
 ## Design notes
 
 | Decision | Why |
@@ -95,6 +101,11 @@ Quarantined rows are on the dashboard deliberately: ingestion quality is a KPI.
 | Checks on both sides of the write | `assert_quality` guards the frame, `verify_load` re-queries the table |
 | Non-retryable deterministic failures | a bad file fails identically every time; retries are for transient faults |
 | Provisioned via APIs, never clicked | a hand-made dashboard cannot be verified by CI |
+
+A batch past `max_reject_ratio` fails before anything is written, rather than
+loading a fraction of the rows and reporting success:
+
+![the quality gate rejecting a 90% corrupt batch](docs/images/airflow-quality-gate-failed.png)
 
 ## CI/CD
 
