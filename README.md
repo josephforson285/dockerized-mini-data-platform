@@ -199,6 +199,12 @@ Long-lived branches defer integration, which is the opposite of what CI is for.
 Run `make e2e` locally for anything touching the pipeline; CI runs it too, but
 the feedback is ten minutes faster on your own stack.
 
+## Demo
+
+[demo-walkthrough.md](docs/demo-walkthrough.md) is a 15-minute script: reset to
+nothing, load a batch, follow it through all four services, then show the
+quality gate refusing a bad batch and a re-run not double-counting.
+
 ## Brief compliance
 
 [`docs/brief-compliance.md`](docs/brief-compliance.md) maps every clause of the
