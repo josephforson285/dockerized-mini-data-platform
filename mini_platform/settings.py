@@ -64,6 +64,7 @@ class PipelineConfig:
     fact_table: str
     reject_table: str
     run_table: str
+    reject_retention_days: int
     source: Path = field(compare=False, default=DEFAULT_CONFIG)
 
 
@@ -117,6 +118,7 @@ def load(path: str | Path | None = None) -> PipelineConfig:
         fact_table=str(warehouse.get("fact_table", "fact_sales")),
         reject_table=str(warehouse.get("reject_table", "rejected_sales")),
         run_table=str(warehouse.get("run_table", "pipeline_runs")),
+        reject_retention_days=int(warehouse.get("reject_retention_days", 90)),
         source=p,
     )
     _validate(cfg)
@@ -138,6 +140,9 @@ def _validate(cfg: PipelineConfig) -> None:
 
     if not cfg.rules.allowed_currencies:
         raise ConfigError("allowed_currencies must not be empty")
+
+    if cfg.reject_retention_days < 1:
+        raise ConfigError(f"reject_retention_days must be >= 1, got {cfg.reject_retention_days}")
 
     if not 0 < cfg.rules.max_reject_ratio <= 1:
         raise ConfigError(f"max_reject_ratio must be in (0, 1], got {cfg.rules.max_reject_ratio}")

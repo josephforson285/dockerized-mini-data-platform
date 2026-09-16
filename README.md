@@ -56,13 +56,19 @@ Ports avoid a host Postgres on 5432 and MySQL on 3306. All values live in
 
 1. `data_generator` writes a seeded CSV with deliberately corrupted rows and a
    manifest stating how many rows should survive cleaning.
-2. `sales_pipeline` discovers unprocessed objects in MinIO, mapping one task
-   per batch.
+2. `sales_pipeline` discovers objects in MinIO that the run ledger has not
+   seen, mapping one task per batch.
 3. `mini_platform.transforms.clean` returns `(clean, rejects)`. Bad rows are
-   quarantined with a reason, never silently dropped.
+   quarantined with a reason, never silently dropped. A batch past
+   `max_reject_ratio` fails before anything is written.
 4. `mini_platform.warehouse` stages rows in a temp table, deletes the batch's
-   previous attempt, then upserts on `order_id`.
-5. Metabase reads `fact_sales` from the `analytics` database.
+   previous attempt, then upserts on `order_id`, and records the attempt in
+   `pipeline_runs`.
+5. `verify_load` re-checks the fact table after the load.
+6. Metabase reads `fact_sales` from the `analytics` database.
+
+A second DAG, `warehouse_maintenance`, runs daily and prunes quarantined rows
+past `reject_retention_days`.
 
 ## Dashboard
 
@@ -103,9 +109,24 @@ generator's deliberate corruption, not from the transform's own output, so a
 broken transform cannot make the suite pass. Verified by disabling
 de-duplication: 5 of 7 end-to-end tests failed.
 
-**Discovery uses warehouse state.** The DAG lists MinIO and subtracts batches
-already loaded, rather than relying on a sensor's memory, so a wiped scheduler
-still behaves correctly.
+**Discovery uses the run ledger, not the fact table.** `pipeline_runs` records
+every attempt, success or failure. Keying discovery on `fact_sales` instead
+looks correct until a batch fails the quality gate: it never lands there, so it
+is rediscovered and re-failed on every subsequent run — one bad file
+permanently reddening a scheduled pipeline. Because only outcomes the pipeline
+understands reach the ledger, a transient crash leaves no row and is correctly
+retried next run.
+
+**Checks run on both sides of the write.** `assert_quality` guards the frame on
+the way in; `verify_load` re-queries the fact table afterwards for nulls,
+thresholds, revenue arithmetic and duplicate keys. Without the second, a bug in
+the loader itself would pass unnoticed.
+
+**Retries are for transient faults only.** A quality-gate or verification
+failure raises `AirflowFailException`, which Airflow does not retry — the same
+file fails the same way. Everything else gets three attempts with exponential
+backoff from 30s, which spans a service restart; a flat short delay expires
+inside the outage and buys nothing.
 
 **Nothing is configured by hand.** Airflow's admin password comes from `.env`,
 and Metabase's admin plus its database registration are created through the
@@ -153,6 +174,7 @@ behind this lab, and a fake deploy would be worse than an honest gap.
 | MinIO image will not pull | Docker Hub no longer serves `minio/minio`; images come from `quay.io` |
 | Code edit has no effect | `mini_platform` is baked into the image — `make up` rebuilds |
 | Metabase rejects a password | its complexity policy needs digits, which `make secrets` guarantees |
+| A bad file fails every run forever | discovery must key on `pipeline_runs`, not `fact_sales` |
 | `password authentication failed for user "platform"` | volumes from an earlier run survived a new `make secrets`. Postgres only applies credentials to an empty data dir, so it kept the old ones. Restore the matching `.env`, or `make nuke && make secrets` to discard the data |
 
 The host exports ROS2's Python 3.12 paths on `PYTHONPATH`, which leak into a

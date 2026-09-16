@@ -45,8 +45,7 @@ CREATE TABLE IF NOT EXISTS {runs} (
     detail        text,
     recorded_at   timestamptz NOT NULL DEFAULT now()
 );
-ALTER TABLE {runs} ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'success';
-ALTER TABLE {runs} ADD COLUMN IF NOT EXISTS detail text;
+
 CREATE INDEX IF NOT EXISTS {runs_batch_ix} ON {runs} (batch_id);
 """
 
@@ -64,6 +63,34 @@ CREATE INDEX IF NOT EXISTS {reject_batch_ix} ON {reject} (batch_id);
 
 def _ident(name: str) -> sql.Identifier:
     return sql.Identifier(name)
+
+
+# Columns added after the first release. ALTER TABLE takes an AccessExclusiveLock
+# even when the column already exists, and ensure_schema runs on every task, so
+# the catalog is checked first — otherwise concurrent tasks deadlock against a
+# DELETE on another table.
+_MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("run_table", "status", "text NOT NULL DEFAULT 'success'"),
+    ("run_table", "detail", "text"),
+)
+
+
+def _apply_migrations(conn: psycopg.Connection, cfg: PipelineConfig) -> None:
+    with conn.cursor() as cur:
+        for table_attr, column, definition in _MIGRATIONS:
+            table = getattr(cfg, table_attr)
+            cur.execute(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name = %s AND column_name = %s",
+                (table, column),
+            )
+            if cur.fetchone():
+                continue
+            cur.execute(
+                sql.SQL("ALTER TABLE {t} ADD COLUMN {c} " + definition).format(
+                    t=_ident(table), c=_ident(column)
+                )
+            )
 
 
 def ensure_schema(conn: psycopg.Connection, cfg: PipelineConfig | None = None) -> None:
@@ -88,6 +115,7 @@ def ensure_schema(conn: psycopg.Connection, cfg: PipelineConfig | None = None) -
                 runs_batch_ix=_ident(f"ix_{cfg.run_table}_batch"),
             )
         )
+    _apply_migrations(conn, cfg)
     conn.commit()
 
 
@@ -277,3 +305,28 @@ def verify_batch(
         failures.append(f"{total - distinct_ids} duplicate order_id rows")
 
     return {"rows": total, "failures": failures}
+
+
+def prune_rejects(
+    conn: psycopg.Connection,
+    cfg: PipelineConfig | None = None,
+    retention_days: int | None = None,
+) -> int:
+    """Delete quarantined rows past the retention window. Returns rows removed.
+
+    Only rejected_sales is pruned. pipeline_runs is the ledger discovery reads,
+    so deleting from it would make old batches look unprocessed and re-attempt
+    them; fact_sales is the product.
+    """
+    cfg = cfg or get()
+    days = cfg.reject_retention_days if retention_days is None else retention_days
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL("DELETE FROM {t} WHERE rejected_at < now() - make_interval(days => %s)").format(
+                t=_ident(cfg.reject_table)
+            ),
+            (days,),
+        )
+        removed = cur.rowcount
+    conn.commit()
+    return removed

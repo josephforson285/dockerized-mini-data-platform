@@ -234,3 +234,132 @@ def test_each_run_is_recorded_for_audit(uploaded_batch, airflow, conn, cfg, batc
     assert loaded == manifest["expected_clean"]
     assert rejected == manifest["expected_rejects"]
     assert read == manifest["rows_written"]
+
+
+def test_a_failed_batch_is_not_rediscovered(airflow, conn, cfg, tmp_path, batch_id):
+    """The poison pill: discovery keyed on the fact table meant a batch that
+    failed the quality gate was re-attempted on every later run, forever."""
+    from data_generator.generate import generate as _gen
+
+    bad, _ = _gen(400, 5, 360, 0, cfg)  # 90% corrupt — well past max_reject_ratio
+    csv = tmp_path / f"{batch_id}.csv"
+    bad.to_csv(csv, index=False)
+    key = f"{cfg.raw_prefix}{batch_id}.csv"
+    storage.upload(csv, key)
+
+    try:
+        airflow.unpause(DAG_ID)
+        with pytest.raises(AssertionError):
+            airflow.run_to_completion(DAG_ID, {"batch_id": batch_id})
+
+        ledger = conn.execute(
+            sql.SQL("SELECT status FROM {t} WHERE batch_id = %s").format(
+                t=sql.Identifier(cfg.run_table)
+            ),
+            (batch_id,),
+        ).fetchone()
+        assert ledger is not None, "a failed attempt was not recorded in the ledger"
+        assert ledger[0] == "quality_failed"
+
+        # A plain run must now skip it rather than failing again.
+        airflow.run_to_completion(DAG_ID, {})
+    finally:
+        for table in (cfg.fact_table, cfg.reject_table, cfg.run_table):
+            conn.execute(
+                sql.SQL("DELETE FROM {t} WHERE batch_id = %s").format(t=sql.Identifier(table)),
+                (batch_id,),
+            )
+        conn.commit()
+        storage.client().delete_object(Bucket=MinioSettings.from_env().bucket, Key=key)
+
+
+def test_verify_batch_catches_corrupted_rows(uploaded_batch, airflow, conn, cfg, batch_id):
+    """Post-load verification must fail on data that was tampered with after
+    the load; checking only before the write would miss a loader bug."""
+    airflow.unpause(DAG_ID)
+    airflow.run_to_completion(DAG_ID, {"batch_id": batch_id})
+
+    assert warehouse.verify_batch(batch_id, conn, cfg)["failures"] == []
+
+    conn.execute(
+        sql.SQL(
+            "UPDATE {t} SET revenue = revenue + 999 WHERE batch_id = %s "
+            "AND ctid = (SELECT ctid FROM {t} WHERE batch_id = %s LIMIT 1)"
+        ).format(t=sql.Identifier(cfg.fact_table)),
+        (batch_id, batch_id),
+    )
+    conn.commit()
+
+    failures = warehouse.verify_batch(batch_id, conn, cfg)["failures"]
+    assert any("revenue" in f for f in failures), f"corruption not caught: {failures}"
+
+
+def test_attempted_batches_covers_failures_not_just_loads(conn, cfg, batch_id):
+    """Discovery keys on this set, so it must include batches that never landed."""
+    warehouse.ensure_schema(conn, cfg)
+    warehouse.record_run(batch_id, 100, 0, 100, 1.0, conn, cfg, status="quality_failed")
+    try:
+        assert batch_id in warehouse.attempted_batches(conn, cfg)
+    finally:
+        conn.execute(
+            sql.SQL("DELETE FROM {t} WHERE batch_id = %s").format(t=sql.Identifier(cfg.run_table)),
+            (batch_id,),
+        )
+        conn.commit()
+
+
+def test_prune_removes_only_rows_past_the_window(conn, cfg, batch_id):
+    """Retention must delete old rejects and leave recent ones alone."""
+    warehouse.ensure_schema(conn, cfg)
+    ins = sql.SQL(
+        "INSERT INTO {t} (batch_id, reject_reason, payload, rejected_at) "
+        "VALUES (%s, %s, %s::jsonb, now() - make_interval(days => %s))"
+    ).format(t=sql.Identifier(cfg.reject_table))
+    conn.execute(ins, (batch_id, "old", "{}", cfg.reject_retention_days + 5))
+    conn.execute(ins, (batch_id, "recent", "{}", 1))
+    conn.commit()
+
+    try:
+        removed = warehouse.prune_rejects(conn, cfg)
+        assert removed >= 1
+
+        left = conn.execute(
+            sql.SQL("SELECT reject_reason FROM {t} WHERE batch_id = %s").format(
+                t=sql.Identifier(cfg.reject_table)
+            ),
+            (batch_id,),
+        ).fetchall()
+        assert [r[0] for r in left] == ["recent"], f"pruned the wrong rows: {left}"
+    finally:
+        conn.execute(
+            sql.SQL("DELETE FROM {t} WHERE batch_id = %s").format(
+                t=sql.Identifier(cfg.reject_table)
+            ),
+            (batch_id,),
+        )
+        conn.commit()
+
+
+def test_pruning_never_touches_the_run_ledger(conn, cfg, batch_id):
+    """Deleting from pipeline_runs would make old batches look unprocessed."""
+    warehouse.ensure_schema(conn, cfg)
+    warehouse.record_run(batch_id, 10, 10, 0, 0.0, conn, cfg)
+    conn.execute(
+        sql.SQL(
+            "UPDATE {t} SET recorded_at = now() - make_interval(days => %s) WHERE batch_id = %s"
+        ).format(t=sql.Identifier(cfg.run_table)),
+        (cfg.reject_retention_days + 30, batch_id),
+    )
+    conn.commit()
+
+    try:
+        warehouse.prune_rejects(conn, cfg)
+        assert batch_id in warehouse.attempted_batches(conn, cfg), (
+            "pruning removed a ledger row; old batches would be re-attempted"
+        )
+    finally:
+        conn.execute(
+            sql.SQL("DELETE FROM {t} WHERE batch_id = %s").format(t=sql.Identifier(cfg.run_table)),
+            (batch_id,),
+        )
+        conn.commit()

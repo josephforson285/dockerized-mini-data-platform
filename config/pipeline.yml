@@ -57,6 +57,11 @@ warehouse:
   fact_table: fact_sales
   reject_table: rejected_sales
   run_table: pipeline_runs
+  # Quarantined rows are for diagnosis, not permanent storage; without a window
+  # rejected_sales grows without bound. pipeline_runs is never pruned — it is
+  # the ledger discovery reads, and deleting from it would re-attempt old
+  # batches.
+  reject_retention_days: 90
 
 generator:
   rows: 2000

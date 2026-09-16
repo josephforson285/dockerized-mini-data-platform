@@ -17,8 +17,11 @@ Kept current; a clause with no evidence column is not done.
 | :-- | :-- | :-- |
 | Sample data generator | `data_generator/generate.py` | `tests/unit/test_generator.py` |
 | DAG detects new files in MinIO | `discover` task in `dags/sales_pipeline.py` | `test_pipeline_loads_exactly_the_expected_rows` |
-| Cleaning and transformation | `mini_platform/transforms.py` | 26 unit tests |
+| Cleaning and transformation | `mini_platform/transforms.py` | 39 unit tests |
 | Loads into PostgreSQL | `mini_platform/warehouse.py` | `test_loaded_rows_satisfy_the_contract` |
+| Post-load verification | `verify_load` task, `warehouse.verify_batch` | `test_verify_batch_catches_corrupted_rows` |
+| Quality gate on bad batches | `transforms.assert_quality`, `rules.max_reject_ratio` | `test_a_failed_batch_is_not_rediscovered` |
+| Run audit and retention | `pipeline_runs`, `warehouse_maintenance` DAG | `test_prune_removes_only_rows_past_the_window` |
 
 ## Part 3 — Visualisation
 
