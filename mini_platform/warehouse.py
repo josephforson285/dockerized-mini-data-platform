@@ -41,8 +41,12 @@ CREATE TABLE IF NOT EXISTS {runs} (
     rows_loaded   integer NOT NULL,
     rows_rejected integer NOT NULL,
     reject_ratio  numeric(5, 4) NOT NULL,
+    status        text NOT NULL DEFAULT 'success',
+    detail        text,
     recorded_at   timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE {runs} ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'success';
+ALTER TABLE {runs} ADD COLUMN IF NOT EXISTS detail text;
 CREATE INDEX IF NOT EXISTS {runs_batch_ix} ON {runs} (batch_id);
 """
 
@@ -194,8 +198,12 @@ def record_run(
     reject_ratio: float,
     conn: psycopg.Connection,
     cfg: PipelineConfig | None = None,
+    status: str = "success",
+    detail: str | None = None,
 ) -> None:
-    """One row per load, so a run stays reviewable after its Airflow logs age out."""
+    """One row per attempt, so a run stays reviewable after its Airflow logs age
+    out. Failures are recorded too: a table that only holds successes cannot
+    answer what happened to a batch that never landed."""
     cfg = cfg or get()
     with conn.cursor() as cur:
         cur.execute(
@@ -204,10 +212,11 @@ def record_run(
         )
         cur.execute(
             sql.SQL(
-                "INSERT INTO {t} (batch_id, rows_read, rows_loaded, rows_rejected, reject_ratio) "
-                "VALUES (%s, %s, %s, %s, %s)"
+                "INSERT INTO {t} "
+                "(batch_id, rows_read, rows_loaded, rows_rejected, reject_ratio, status, detail) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)"
             ).format(t=_ident(cfg.run_table)),
-            (batch_id, rows_read, rows_loaded, rows_rejected, reject_ratio),
+            (batch_id, rows_read, rows_loaded, rows_rejected, reject_ratio, status, detail),
         )
     conn.commit()
 

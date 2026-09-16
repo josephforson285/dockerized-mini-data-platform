@@ -16,7 +16,7 @@ from airflow.sdk import Param, dag, task
 from mini_platform import storage, warehouse
 from mini_platform.config import PostgresSettings, load_env
 from mini_platform.settings import get
-from mini_platform.transforms import assert_quality, clean
+from mini_platform.transforms import QualityGateFailed, assert_quality, clean
 
 log = logging.getLogger(__name__)
 
@@ -31,8 +31,13 @@ def _batch_id(key: str) -> str:
     start_date=dt.datetime(2026, 1, 1),
     catchup=False,
     max_active_runs=1,
-    # The load is idempotent, so retrying a half-finished task is safe.
-    default_args={"retries": 2, "retry_delay": dt.timedelta(seconds=10)},
+    # The load is idempotent, so retrying a half-finished task is safe. A hung
+    # task is not: without a timeout it holds a slot until someone notices.
+    default_args={
+        "retries": 2,
+        "retry_delay": dt.timedelta(seconds=10),
+        "execution_timeout": dt.timedelta(minutes=20),
+    },
     tags=["sales", "minio", "postgres"],
     params={
         "batch_id": Param(
@@ -89,7 +94,25 @@ def sales_pipeline():
 
         # Fail before writing: a mostly-bad batch is an upstream incident, and
         # loading it would publish a misleading partial dataset.
-        reject_ratio = assert_quality(good, bad, cfg)
+        try:
+            reject_ratio = assert_quality(good, bad, cfg)
+        except QualityGateFailed as exc:
+            # Record the attempt, then fail without retrying: the same file will
+            # fail the same way, so two more runs only waste time.
+            with psycopg.connect(PostgresSettings.from_env().dsn) as conn:
+                warehouse.ensure_schema(conn, cfg)
+                warehouse.record_run(
+                    batch_id,
+                    len(raw),
+                    0,
+                    len(bad),
+                    round(len(bad) / len(raw), 4) if len(raw) else 0.0,
+                    conn,
+                    cfg,
+                    status="quality_failed",
+                    detail=str(exc),
+                )
+            raise AirflowFailException(str(exc)) from exc
 
         with psycopg.connect(PostgresSettings.from_env().dsn) as conn:
             warehouse.ensure_schema(conn, cfg)
