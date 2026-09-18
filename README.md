@@ -1,7 +1,7 @@
 # Mini Data Platform
 
 Synthetic sales data lands in object storage, Airflow cleans and loads it into
-Postgres, Metabase serves it. Every hop is verified by GitHub Actions.
+Postgres, Metabase serves it, all as a containerised platform. Every hop is verified by GitHub Actions.
 
 ```mermaid
 flowchart LR
@@ -22,148 +22,110 @@ make up                        # build, start, wait healthy, provision Metabase
 make seed                      # generate a batch and upload it to MinIO
 ```
 
-Unpause `sales_pipeline` in the Airflow UI, or run `make e2e`. The **Sales
-Overview** dashboard is already built and populates as data lands.
 
-| Service | URL |
-| :-- | :-- |
-| Airflow | http://localhost:8082 |
-| MinIO console | http://localhost:9003 |
-| Metabase | http://localhost:3001 |
-| Postgres | localhost:5435 |
+Then unpause `sales_pipeline` in Airflow or run:
 
-Ports avoid a host Postgres on 5432 and MySQL on 3306. Values live in `.env`,
-filled by `make secrets`.
+```bash
+make e2e
+```
 
-## Make targets
+The **Sales Overview** dashboard is provisioned automatically.
 
-| Target | Does |
-| :-- | :-- |
-| `make doctor` | preflight: toolchain, venv hygiene, port conflicts, disk |
-| `make up` / `make down` | start (build + wait healthy + provision) / stop |
-| `make seed` | generate a synthetic batch, upload to MinIO |
-| `make lint` | ruff, yamllint, hadolint, shellcheck |
-| `make test` | unit tests, no Docker needed |
-| `make dags` | parse the DAG bag inside the Airflow image |
-| `make e2e` | end-to-end suite against the running stack |
-| `make ci` | what CI's fast tier runs |
-| `make provision` | re-run Metabase provisioning (idempotent) |
-| `make nuke` | stop and delete this project's volumes |
+| Service    | URL                   |
+| :--------- | :-------------------- |
+| Airflow    | http://localhost:8082 |
+| MinIO      | http://localhost:9003 |
+| Metabase   | http://localhost:3001 |
+| PostgreSQL | localhost:5435        |
 
-## How the pipeline works
+Configuration is managed through `.env`.
 
-1. `data_generator` writes a seeded CSV with deliberately corrupted rows and a
-   manifest stating how many rows should survive cleaning.
-2. `sales_pipeline` discovers objects in MinIO that the run ledger has not
-   seen, mapping one task per batch.
-3. `mini_platform.transforms.clean` returns `(clean, rejects)`. Bad rows are
-   quarantined with a reason, never silently dropped. A batch past
-   `max_reject_ratio` fails before anything is written.
-4. `mini_platform.warehouse` stages rows in a temp table, deletes the batch's
-   previous attempt, then upserts on `order_id`, and records the attempt in
-   `pipeline_runs`.
-5. `verify_load` re-checks the fact table after the load.
-6. Metabase reads `fact_sales` from the `analytics` database.
+## Pipeline
 
-![sales_pipeline after a successful run](docs/images/airflow-dag-success.png)
+1. `data_generator` creates reproducible CSV batches containing valid and intentionally corrupted rows.
+2. Airflow discovers unprocessed batches from MinIO.
+3. `mini_platform.transforms.clean` separates valid rows from rejected rows and records rejection reasons.
+4. A configurable quality gate stops batches exceeding `max_reject_ratio`.
+5. Clean data is staged and upserted into `fact_sales`; rejected rows are stored in `rejected_sales`.
+6. `verify_load` validates the completed warehouse write.
+7. Metabase reads the analytics tables for reporting.
 
-`ingest` is dynamically mapped — one task instance per batch `discover` finds.
+![sales\_pipeline after a successful run](docs/images/airflow-dag-success.png)
 
-A second DAG, `warehouse_maintenance`, runs daily and prunes quarantined rows
-past `reject_retention_days`.
+Airflow dynamically maps ingestion tasks so each discovered batch is processed independently.
+
+A separate `warehouse_maintenance` DAG removes rejected records older than the configured retention period.
 
 ## Dashboard
 
-`make up` builds **Sales Overview** from [`config/dashboard.yml`](config/dashboard.yml)
-through the Metabase API, so it rebuilds identically on any machine.
+`make up` provisions the **Sales Overview** dashboard from `config/dashboard.yml`.
 
-| KPIs | Trends and breakdowns |
-| :-- | :-- |
-| Total revenue | Revenue by day |
-| Orders | Revenue by category |
-| Average order value | Revenue by country |
-| Rows quarantined | Orders by payment method |
-| | Rejected rows by reason |
+It includes:
 
-Quarantined rows are on the dashboard deliberately: ingestion quality is a KPI.
+| KPIs                | Breakdowns               |
+| :------------------ | :----------------------- |
+| Total revenue       | Revenue by day           |
+| Orders              | Revenue by category      |
+| Average order value | Revenue by country       |
+| Rows quarantined    | Orders by payment method |
+|                     | Rejections by reason     |
+
+Rejected rows are included so data quality remains visible alongside business metrics.
 
 ![Sales Overview dashboard](docs/images/metabase-dashboard.png)
 
-## Design notes
+## Key Design Decisions
 
-| Decision | Why |
-| :-- | :-- |
-| Staging table, delete-by-batch, upsert | Airflow retries; a re-run must not double-count |
-| Logic outside Airflow | `mini_platform` imports no Airflow, so 39 unit tests run in 0.5s with no containers |
-| Rules in `config/pipeline.yml` | currencies were once declared twice, so the generator could emit rows its own validator rejected |
-| Tests assert against the generator manifest | comparing a transform to its own output always passes; disabling de-duplication failed 5 of 7 e2e tests |
-| Discovery keys on `pipeline_runs`, not `fact_sales` | a gate-failed batch never lands, so it would be re-attempted forever |
-| Checks on both sides of the write | `assert_quality` guards the frame, `verify_load` re-queries the table |
-| Non-retryable deterministic failures | a bad file fails identically every time; retries are for transient faults |
-| Provisioned via APIs, never clicked | a hand-made dashboard cannot be verified by CI |
+| Decision                                 | Purpose                                            |
+| :--------------------------------------- | :------------------------------------------------- |
+| Staging + batch replacement + upsert     | Safe retries without duplicate data                |
+| Transformation logic outside Airflow     | Fast unit testing without containers               |
+| Central rules in `config/pipeline.yml`   | Single source of truth for validation              |
+| Generator manifest used in tests         | Independent verification of expected results       |
+| `pipeline_runs` ledger                   | Tracks processed batches, including failures       |
+| Pre- and post-load validation            | Protects both transformed data and warehouse state |
+| Deterministic failures are non-retryable | Retries are reserved for transient faults          |
+| Dashboard provisioned through API        | Reproducible and CI-verifiable setup               |
 
-A batch past `max_reject_ratio` fails before anything is written, rather than
-loading a fraction of the rows and reporting success:
+A batch that exceeds the allowed rejection ratio fails before warehouse data is written.
 
-![the quality gate rejecting a 90% corrupt batch](docs/images/airflow-quality-gate-failed.png)
+![quality gate failure](docs/images/airflow-quality-gate-failed.png)
 
 ## CI/CD
 
-`.github/workflows/main.yml` runs two tiers:
+GitHub Actions validates the platform through:
 
-| Job | Does |
-| :-- | :-- |
-| `lint` `unit` `dags` | fast tier, parallel, no services, under 90s |
-| `end-to-end` | builds the platform, provisions Metabase, runs the integration suite |
-| `publish image` | pushes to GHCR tagged `sha-<commit>`, never `latest` |
-| `deploy to test environment` | pulls that exact image, `--no-build`, smoke-tests it |
+| Stage                        | Purpose                                             |
+| :--------------------------- | :-------------------------------------------------- |
+| `lint`, `unit`, `dags`       | Fast static, unit, and DAG validation               |
+| `end-to-end`                 | Builds the full platform and runs integration tests |
+| `publish image`              | Pushes a commit-specific image to GHCR              |
+| `deploy to test environment` | Deploys and smoke-tests the exact built image       |
 
-`main` is protected: no direct pushes, the four checks must pass, and auto-merge
-lands a PR the moment they do. CI runs the same `make` targets you do, so the
-runbook cannot drift. No repository secrets — GHCR uses `GITHUB_TOKEN`.
+`main` is protected from direct pushes. Required checks must pass before merging.
 
-A failed run writes per-service state into the run summary and uploads compose
-logs; GitHub's own email is the notification.
+CI uses the same `make` targets used locally, reducing differences between development and automation.
 
-### Promoting to production
+Failed runs upload service logs and diagnostic information.
 
-`deploy-test` deploys to an ephemeral environment on the runner. Promoting the
-same digest to a long-lived host is one further gated job — not wired up, since
-there is no server behind this lab and a fake deploy would be worse.
+### Production Promotion
 
-## Contributing
+The test deployment uses an ephemeral CI environment. Production deployment is intentionally not configured because this lab has no persistent production host.
 
-`main` is protected: it takes no direct pushes, and a change merges only once
-`lint`, `unit tests`, `dag integrity` and `end-to-end` are green.
+## Common Commands
 
-```bash
-git switch -c fix/short-description
-# change, then:
-make ci                 # the fast tier, before pushing
-git push -u origin HEAD
-gh pr create --fill
-```
+| Command                 | Purpose                                  |
+| :---------------------- | :--------------------------------------- |
+| `make doctor`           | Check tools, ports, disk and environment |
+| `make up` / `make down` | Start or stop the platform               |
+| `make seed`             | Generate and upload sample data          |
+| `make lint`             | Run static checks                        |
+| `make test`             | Run unit tests                           |
+| `make dags`             | Validate Airflow DAGs                    |
+| `make e2e`              | Run end-to-end tests                     |
+| `make ci`               | Run the fast CI checks locally           |
+| `make provision`        | Re-provision Metabase                    |
+| `make nuke`             | Remove containers and project volumes    |
 
-Branches are short-lived — opened and merged the same day, deleted on merge.
-Long-lived branches defer integration, which is the opposite of what CI is for.
-Run `make e2e` locally for anything touching the pipeline; CI runs it too, but
-the feedback is ten minutes faster on your own stack.
-
-## Brief compliance
-
-[`docs/brief-compliance.md`](docs/brief-compliance.md) maps every clause of the
-brief to its implementation and the test that proves it.
-
-## Layout
-
-```text
-dags/                 Airflow DAG definitions
-mini_platform/        transforms, warehouse, storage, config — no Airflow imports
-data_generator/       seeded synthetic batches with a manifest
-config/               pipeline.yml (rules), dashboard.yml, Postgres init
-docker/airflow/       runtime and test image stages
-scripts/              doctor, secrets, Metabase provisioning
-tests/unit/           fast, no Docker
-tests/integration/    end to end against a running stack
-.github/workflows/    CI/CD pipeline
-```
+ 
+ 

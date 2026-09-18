@@ -1,93 +1,54 @@
-# CI/CD for data pipelines
+# CI/CD for Data Pipelines
 
-Applying CI/CD to data work is not just running the same pipeline against
-different code. Three properties of data systems change what the pipeline has
-to prove.
+CI/CD for data systems must validate more than code. It also has to protect data quality, pipeline state, and reproducibility.
 
-## What makes data different
+## What Makes Data Pipelines Different
 
-**Correct code can still produce wrong data.** An application test asks "does
-this function return what I expect?". A pipeline must also ask "is the data that
-came out of it usable?" — a transform can be flawless and still load a batch
-where every `customer_id` is null because upstream changed. Tests therefore have
-to cover the *data contract*, not only the code.
+**Correct code can still produce bad data.**
+Tests must validate both transformation logic and the **data contract** — schema, required fields, ranges, and expected values.
 
-**Pipelines are stateful.** Deploying a web service replaces a stateless
-process. Deploying a pipeline changes something that writes to a warehouse other
-people query. Retries, backfills and replays all re-execute the same work, so
-"run it again" must be safe by construction.
+**Pipelines are stateful.**
+Retries, replays, and backfills may process the same batch more than once, so loads must be **idempotent** and safe to repeat.
 
-**Environments need data, not just code.** A test environment with no data
-proves nothing. It needs data that is realistic in shape and volume, without
-copying production records into a place with weaker access controls.
+**Test environments need representative data.**
+Testing requires realistic data structures and failure cases without exposing production records.
 
-## The testing layers
+## Testing Layers
 
-Tests are cheapest and most specific at the bottom, and each layer catches what
-the one below cannot.
+| Layer                 | Purpose                               | In this project             |
+| :-------------------- | :------------------------------------ | :-------------------------- |
+| Unit tests            | Validate transformation logic         | Pure Python, no Docker      |
+| Contract/config tests | Detect schema or configuration errors | Config validated at load    |
+| DAG tests             | Ensure Airflow DAGs import correctly  | Tested inside Airflow image |
+| Integration tests     | Validate real service interactions    | Full platform stack         |
+| Data-quality checks   | Detect invalid incoming data          | Rejects stored with reasons |
 
-| Layer | Catches | Cost | Here |
-| :-- | :-- | :-- | :-- |
-| Unit — pure transforms | logic errors in cleaning rules | ~0.5s | 36 tests, no Docker |
-| Contract — schema and config | a changed contract, an invalid config | instant | config validated at load |
-| DAG parse | a DAG that no longer imports | seconds | 4 tests in the Airflow image |
-| Integration — real services | wiring, permissions, ordering | minutes | 11 tests, full stack |
-| In-pipeline data quality | bad rows in real data | per run | rejects table with reasons |
+Business logic is kept outside Airflow in `mini_platform`, allowing transformations to be tested independently and quickly.
 
-The structural decision that makes this possible is keeping business logic out
-of the orchestrator. `mini_platform` imports no Airflow. That is why the cleaning
-contract is testable in half a second instead of needing a scheduler, and why
-the fast tier of CI finishes in under a minute.
+## Reliability Patterns
 
-## How this improves reliability — with evidence
+**Idempotent loading**
+Rows are staged, previous attempts for the batch are replaced, and records are upserted by `order_id`. Re-running a batch therefore does not duplicate data.
 
-Each of these is something that actually happened while building this platform,
-not a hypothetical.
+**Independent expected results**
+Expected row counts come from the generator manifest rather than the transformation output itself, preventing tests from validating a function against its own result.
 
-**Idempotency turns retries from a risk into a non-event.** The load stages rows
-in a temp table, deletes the batch's previous attempt, then upserts on the
-natural key. Airflow retries tasks by default; without this, one retry silently
-doubles a batch. The end-to-end suite runs the DAG twice and asserts the row
-count is unchanged.
+**Cold-start testing**
+End-to-end tests start from clean services and volumes, exposing hidden dependencies on existing state.
 
-**Tests must be able to fail.** Expected row counts come from the generator's
-manifest — computed from deliberate corruption — rather than from the
-transform's own output. Comparing a transform to itself always passes. This was
-verified by sabotage: disabling de-duplication failed 5 of 7 end-to-end tests,
-and the 2 that passed were the ones that do not exercise the transform.
+**Centralized rules**
+Validation rules such as allowed currencies live in `config/pipeline.yml`, providing a single source of truth.
 
-**CI must run what production runs.** A healthcheck used
-`airflow jobs check` with a 5-second timeout. Measured on an idle 12-core
-machine, that command takes **5.014 seconds**. It passed locally by luck and
-failed on a shared CI runner every time. Local success on a fast machine is not
-evidence.
+**Visible failures**
+Invalid records are written to `rejected_sales` with rejection reasons instead of being silently discarded.
 
-**Test from a cold start.** The suite passed repeatedly against a stack that had
-been running for hours, then failed the first time it ran against empty volumes:
-Metabase had not yet discovered a table, and a fixture assumed tables another
-test had created. Warm-state dependence is invisible until CI, which is always
-cold.
+## DataOps
 
-**One definition of every rule.** The list of valid currencies was declared in
-both the schema module and the generator. Adding a currency to one would make
-the generator emit rows its own validator rejected — and the failure would
-surface as a confusing count mismatch far from the cause. Rules now live in
-`config/pipeline.yml`, with a regression test pinning it.
+DataOps extends CI/CD principles across the full data lifecycle:
 
-**Bad rows are visible, not discarded.** Cleaning returns `(clean, rejects)`;
-rejected rows are written to a quarantine table with the rule that failed and
-are shown on the dashboard. A pipeline that silently drops rows reports success
-while losing data.
+* version code, configuration, and dashboard definitions;
+* automate testing and deployment;
+* use reproducible infrastructure and immutable artifacts;
+* monitor data quality as well as job status.
 
-## What DataOps adds
-
-DataOps is this discipline applied to the data lifecycle as a whole: version
-everything (code, configuration, dashboards), test continuously, deploy
-immutable artifacts, and monitor the data itself rather than only the job status.
-
-The practical marker is that nothing is configured by hand. In this platform the
-Airflow credentials, the Metabase admin, the warehouse connection and all nine
-dashboard cards are provisioned through APIs from files in the repository, and
-the dashboard reconciles with its config on every run. If a dashboard exists
-only because someone clicked it into being, it cannot be reviewed, cannot be
-rebuilt, and cannot be verified by CI.
+In this platform, Airflow, PostgreSQL, Metabase connections, and dashboard configuration are provisioned from version-controlled files rather than manual setup. This makes the environment reproducible, reviewable, and testable.
