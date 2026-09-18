@@ -1,52 +1,47 @@
-# Brief compliance
+# Brief Compliance
 
-Every clause of [the brief](brief.md), what implements it, and how it is proven.
-Kept current; a clause with no evidence column is not done.
+This document maps the project brief to its implementation and verification.
 
-## Part 1 — Infrastructure
+## Infrastructure
 
-| Clause | Implementation | Evidence |
-| :-- | :-- | :-- |
-| Four services in one `docker-compose.yml` | `docker-compose.yml` | `make validate` |
-| Persistent storage via Docker volumes | `pgdata`, `miniodata`, `airflow-logs`, `airflow-auth` | `docker volume ls` after `make up` |
-| Network allows Airflow → MinIO and Postgres | explicit `platform` bridge network | `tests/integration` runs through it |
+| Requirement                 | Implementation            | Verification             |
+| :-------------------------- | :------------------------ | :----------------------- |
+| Four containerized services | `docker-compose.yml`      | `make validate`          |
+| Persistent storage          | Docker volumes            | Verified after `make up` |
+| Service networking          | `platform` bridge network | Integration tests        |
 
-## Part 2 — Pipeline
+## Data Pipeline
 
-| Clause | Implementation | Evidence |
-| :-- | :-- | :-- |
-| Sample data generator | `data_generator/generate.py` | `tests/unit/test_generator.py` |
-| DAG detects new files in MinIO | `discover` task in `dags/sales_pipeline.py` | `test_pipeline_loads_exactly_the_expected_rows` |
-| Cleaning and transformation | `mini_platform/transforms.py` | 39 unit tests |
-| Loads into PostgreSQL | `mini_platform/warehouse.py` | `test_loaded_rows_satisfy_the_contract` |
-| Post-load verification | `verify_load` task, `warehouse.verify_batch` | `test_verify_batch_catches_corrupted_rows` |
-| Quality gate on bad batches | `transforms.assert_quality`, `rules.max_reject_ratio` | `test_a_failed_batch_is_not_rediscovered` |
-| Run audit and retention | `pipeline_runs`, `warehouse_maintenance` DAG | `test_prune_removes_only_rows_past_the_window` |
+| Requirement                 | Implementation                    | Verification       |
+| :-------------------------- | :-------------------------------- | :----------------- |
+| Synthetic data generator    | `data_generator/generate.py`      | Unit tests         |
+| Detect new MinIO files      | `discover` task                   | Integration tests  |
+| Clean and transform data    | `mini_platform/transforms.py`     | Unit tests         |
+| Load PostgreSQL             | `mini_platform/warehouse.py`      | Integration tests  |
+| Verify loaded data          | `verify_load`                     | Verification tests |
+| Reject poor-quality batches | Quality gate + `max_reject_ratio` | Failure-path tests |
+| Audit and retention         | `pipeline_runs`, maintenance DAG  | Retention tests    |
 
-## Part 3 — Visualisation
+## Visualisation
 
-| Clause | Implementation | Evidence |
-| :-- | :-- | :-- |
-| Connect Metabase to PostgreSQL | `scripts/provision_metabase.py` | `test_metabase_serves_the_warehouse` |
-| Dashboard of KPIs and trends | `config/dashboard.yml`, provisioned via API | `test_dashboard_exists_with_kpis_and_trends` |
+| Requirement                      | Implementation          | Verification     |
+| :------------------------------- | :---------------------- | :--------------- |
+| Metabase connected to PostgreSQL | `provision_metabase.py` | Integration test |
+| KPI dashboard                    | `config/dashboard.yml`  | Dashboard test   |
 
 ## CI/CD
 
-| Clause | Implementation | Evidence |
-| :-- | :-- | :-- |
-| Build and lint images each commit | `lint` + `dags` jobs | hadolint on the only Dockerfile; the other three services run pinned upstream images, which have no Dockerfile to build |
-| Deploy updated containers to a test environment | `publish` → GHCR `sha-<commit>`, then `deploy-test` pulls that image into an ephemeral environment | `deploy-test` job smoke-tests the published artifact |
-| Validate data flow MinIO → Airflow → Postgres → Metabase | `tests/integration/test_end_to_end.py` | `integration` job |
-| Manage notifications | GitHub's native failure email, plus a run summary of per-service state and uploaded compose logs | `Report failure in the run summary` step |
+| Requirement                      | Implementation                           | Verification           |
+| :------------------------------- | :--------------------------------------- | :--------------------- |
+| Automated linting and validation | `lint`, `dags` jobs                      | GitHub Actions         |
+| Deploy to test environment       | GHCR image + `deploy-test`               | Smoke test             |
+| Validate end-to-end flow         | Integration suite                        | `end-to-end` job       |
+| Failure reporting                | GitHub notifications, summaries and logs | Workflow failure steps |
 
-## Repository structure
+## Repository Structure
 
-Required by the brief and present: `dags/`, `data_generator/`, `docker-compose.yml`,
-`config/`, `.github/workflows/`, `.gitignore`, `README.md`.
+Required project components are present:
 
-## Known limits
+`dags/`, `data_generator/`, `config/`, `.github/workflows/`, `docker-compose.yml`, `.gitignore`, and `README.md`.
 
-Promotion to a long-lived production host is not wired up: there is no server
-for this lab. `deploy-test` deploys the published image to an ephemeral
-environment and verifies it; promoting the same digest to a real host would be
-one further job gated behind a GitHub Environment.
+ 
