@@ -103,6 +103,18 @@ logs: ## Tail logs
 seed: ## Generate a batch, upload to MinIO
 	$(PY) -m data_generator.generate --upload
 
+.PHONY: seed-many
+seed-many: ## Upload three batches at once, so ingest fans out
+	@for i in 1 2 3; do \
+		$(PY) -m data_generator.generate --batch-id "region_$$i" --rows 1200 \
+			--seed $$((i * 11)) --corrupt 36 --duplicates 24 --upload | grep uploaded; \
+	done
+
+.PHONY: seed-bad
+seed-bad: ## Upload a batch past max_reject_ratio, which the gate must refuse
+	@$(PY) -m data_generator.generate --batch-id broken --rows 2000 --seed 9 \
+		--corrupt 1800 --duplicates 0 --upload | grep uploaded
+
 .PHONY: e2e
 e2e: ## MinIO -> Airflow -> Postgres -> Metabase, incl. idempotency
 	$(PY) -m pytest tests/integration -q
